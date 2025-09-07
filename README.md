@@ -173,8 +173,6 @@ Edit the **SETTINGS** section near the top of `diag_quicksearch.php` if you want
 ## Roadmap
 
 * Optional keyboard navigation in the dropdown (↑/↓/Enter).
-* CE/Plus build scripts & GitHub Actions for `.pkg` artifacts.
-* Lightweight settings page (TTL, excludes).
 * Optional modal UI (toggle between inline/modal).
 
 ---
