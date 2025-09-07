@@ -1,8 +1,23 @@
 <?php
-// diag_quicksearch.php
-// Full-text search across /usr/local/www/**/*.php (no HTTP, no disk writes).
-// Recurses into subfolders (e.g. /pfblockerng/www). Keeps index in RAM (SysV SHM).
-// Shows human page titles from pfSense metadata (##|*NAME=...) or $pgtitle.
+/*
+ * diag_quicksearch.php
+ *
+ * part of pfSense (https://www.pfsense.org)
+ * Copyright (c) 2015-2025 Rubicon Communications, LLC (Netgate)
+ * All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 declare(strict_types=1);
 
@@ -98,7 +113,7 @@ function norm_text(string $s, int $max = 220): string {
   $s = preg_replace('/\s+/u', ' ', $s);
   $s = trim($s);
   if ($s === '') return '';
-  if (mb_strlen($s) > $max) $s = mb_substr($s, 0, $max) . '…';
+  if (mb_strlen($s) > $max) $s = mb_substr($s, 0, $max) . 'â€¦';
   return $s;
 }
 
@@ -403,3 +418,4 @@ if (!empty($_GET['debug'])) {
 }
 
 echo json_encode(['items' => $items], JSON_UNESCAPED_UNICODE);
+
