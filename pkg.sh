@@ -7,7 +7,7 @@
 set -eu
 
 PKGNAME="pfsense-quicksearch"
-PKGVER="0.4.2"
+PKGVER="0.4.4"
 
 ROOT="/root/qs-pkg"
 STAGE="$ROOT/stage"
@@ -40,9 +40,9 @@ cat > "$META/+MANIFEST" << EOF
 name: ${PKGNAME}
 version: ${PKGVER}
 origin: local/${PKGNAME}
-comment: QuickSearch – full-text GUI search for pfSense (RAM-only index)
-www: https://example.invalid
-maintainer: admin@example.invalid
+comment: QuickSearch   full-text GUI search for pfSense (RAM-only index)
+www: https://github.com/woffko/pfSense-quick-search
+maintainer: w0wkin@gmail.com
 arch: freebsd:*
 prefix: /
 desc: |
@@ -108,7 +108,7 @@ exit 0
 EOF
 chmod +x "$META/+POST_DEINSTALL"
 
-echo "[*] Building package…"
+echo "[*] Building package "
 cd "$ROOT"
 pkg create -r ./stage -m ./meta -p ./pkg-plist -o .
 
