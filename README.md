@@ -172,8 +172,7 @@ Edit the **SETTINGS** section near the top of `diag_quicksearch.php` if you want
 
 ## Roadmap
 
-* Optional keyboard navigation in the dropdown (↑/↓/Enter).
-* Optional modal UI (toggle between inline/modal).
+* Fix reported issues 
 
 ---
 
