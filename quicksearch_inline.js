@@ -10,10 +10,10 @@
  */
 
 (function () {
-  const BUILD          = 'InlineQuickSearch v2025-09-09-03';
-  const PH_BASE_LABEL  = 'Find';
-  const MIN_CHARS      = 3;      // minimum query length
-  const IDLE_MS        = 3000;   // delay after last keystroke before auto-search
+  const BUILD          = 'InlineQuickSearch v2025-09-12-01';
+  const PH_BASE_LABEL  = 'Find';   // fallback label; will be replaced by i18n if available
+  const MIN_CHARS      = 3;        // minimum query length
+  const IDLE_MS        = 500;      // delay after last keystroke before auto-search
 
   // ---------- CSS ----------
   (function injectCss(){
@@ -26,10 +26,10 @@
       #topmenu #pf-navbar .navbar-right > li{ display:flex; align-items:center; }
       #topmenu #pf-navbar .navbar-right > li > a{ display:flex; align-items:center; }
 
-      /* host li for the search form */
+      /* host <li> for the search form (rightmost in navbar) */
       #topmenu #pf-navbar .navbar-right > li.qs-li{ margin:0; padding:0; }
 
-      /* container form pinned to the right */
+      /* inline form container */
       #qs-inline-form.navbar-form.qs-inline{
         display:inline-flex; margin:0 !important; padding:0 !important; white-space:nowrap; position:relative;
       }
@@ -37,10 +37,10 @@
         display:flex; align-items:stretch; gap:8px; margin:0;
       }
 
-      /* input width (compact) */
-      #qs-inline-input{ width:180px; min-width:140px; padding:6px 8px; }
-      @media (max-width:1200px){ #qs-inline-input{ width:160px; } }
-      @media (max-width: 992px){ #qs-inline-input{ width:140px; } }
+      /* compact input (reduced by one third) */
+      #qs-inline-input{ width:120px; min-width:94px; padding:6px 8px; }
+      @media (max-width:1200px){ #qs-inline-input{ width:107px; } }
+      @media (max-width: 992px){ #qs-inline-input{ width:94px; } }
 
       /* icon button — height is synced via JS to match input exactly */
       #qs-inline-icon.btn{
@@ -67,13 +67,30 @@
     document.head.appendChild(s);
   })();
 
-  // ---------- helpers ----------
+  // ---------- i18n helpers ----------
+  // Holds UI strings fetched from the server (active GUI language)
+  let I18N = null;
+
+  // Safe accessor with fallback
+  const L = (k, dflt) => (I18N && typeof I18N[k] === 'string') ? I18N[k] : dflt;
+
+  // Fetch translated UI strings from diag_quicksearch.php
+  async function loadI18n(){
+    try{
+      const r = await fetch('/diag_quicksearch.php?i18n=1&t=' + Date.now(), { credentials:'same-origin', cache:'no-store' });
+      if (!r.ok) return;
+      I18N = await r.json();
+    }catch(_e){ /* ignore; fallbacks will be used */ }
+  }
+
+  // ---------- generic helpers ----------
   const escapeHtml = s => (s||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   const isPathLike = s => /^\/[A-Za-z0-9/_\-.]+(\?.*)?(#.*)?$/.test(s || '');
   const humanizePath = p => (p||'').split('/').pop().replace(/\.php$/i,'').replace(/_/g,' ').replace(/\s+/g,' ').trim().replace(/\b\w/g,c=>c.toUpperCase());
   const debounce = (fn, ms) => { let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; };
 
   function titleFromItem(it){
+    // Try common fields, then derive from path
     let t = it.page || it.title || it.label || it.name || it.text || it.display || '';
     if (!t || isPathLike(t)) t = humanizePath(it.path || '');
     return t || (it.path||'');
@@ -81,7 +98,7 @@
   const show = p => (p.style.display='block');
   const hide = p => { p.style.display='none'; p.innerHTML=''; };
 
-  // Match icon height to input height (theme-agnostic)
+  // Make the icon exactly as tall as the input (theme-agnostic)
   function syncHeights(icon, input){
     if (!icon || !input) return;
     requestAnimationFrame(() => {
@@ -90,7 +107,7 @@
       icon.style.height = h + 'px';
       icon.style.minHeight = h + 'px';
       icon.style.lineHeight = h + 'px';
-      // Uncomment to make the button perfectly square:
+      // Optional: make the icon perfectly square
       // icon.style.width = h + 'px';
     });
   }
@@ -116,12 +133,13 @@
     setSpin(iconEl, isBusy);
   }
 
-  // Core search: fetch results and render the dropdown
+  // ---------- core search ----------
+  // Fetch results and render the dropdown
   function runQuery(q, panel, iconEl, {rebuild=false} = {}){
     const query = (q||'').trim();
     if (query.length < MIN_CHARS){ hide(panel); setSpin(iconEl, false); return; }
 
-    // cancel previous request if any
+    // Cancel any previous request
     if (inflight){ inflight.abort(); inflight = null; }
 
     const controller = new AbortController();
@@ -139,7 +157,7 @@
         if (mySeq !== seq) return; // stale response
         const items = d.items || [];
         if (!items.length){
-          panel.innerHTML = `<div style="padding:10px 12px; color:#999; font-size:12px;">No results...</div>`;
+          panel.innerHTML = `<div style="padding:10px 12px; color:#999; font-size:12px;">${escapeHtml(L('no_results','No results...'))}</div>`;
           show(panel); return;
         }
         panel.innerHTML = items.map(it => {
@@ -149,6 +167,7 @@
           return `<div data-row role="option" data-path="${escapeHtml(path)}"><div class="t">${escapeHtml(title)}</div>${second}</div>`;
         }).join('');
 
+        // Row interactions
         panel.querySelectorAll('[data-row]').forEach(row => {
           row.addEventListener('mouseover', () => {
             panel.querySelectorAll('[data-row]').forEach(r => r.style.background='');
@@ -163,7 +182,7 @@
       })
       .catch(err => {
         if (err && err.name === 'AbortError') return;
-        panel.innerHTML = `<div style="padding:10px 12px; color:#c00; font-size:12px;">Request error</div>`;
+        panel.innerHTML = `<div style="padding:10px 12px; color:#c00; font-size:12px;">${escapeHtml(L('request_error','Request error'))}</div>`;
         show(panel);
         console.error('[InlineQuickSearch] fetch error:', err);
       })
@@ -174,12 +193,14 @@
       });
   }
 
-  // Rebuild-then-search (fixes the case where ?rebuild=1 clears cache but doesn't return results)
+  // Rebuild-then-search:
+  // Some backends clear the cache on ?rebuild=1 but don't return items for q in that call.
+  // Do rebuild first (ignore its response), then run a normal search with the same query.
   async function rebuildThenSearch(q, panel, iconEl){
     const query = (q||'').trim();
     if (query.length < MIN_CHARS) return;
 
-    // stop any running search
+    // Stop any running search
     if (inflight){ inflight.abort(); inflight = null; }
 
     setBusy(iconEl, true); // keep spinner during rebuild + search
@@ -187,7 +208,6 @@
       const url = '/diag_quicksearch.php?rebuild=1&t=' + Date.now();
       await fetch(url, { credentials:'same-origin', cache:'no-store' });
     } catch (e) {
-      // Rebuild failures shouldn't block the follow-up search
       console.warn('[InlineQuickSearch] rebuild failed (continuing):', e);
     }
     // Now run a normal search with the same query
@@ -231,13 +251,22 @@
     const icon  = form.querySelector('#qs-inline-icon');
     const panel = form.querySelector('#qs-inline-dd');
 
-    // make the icon exactly as tall as the input (also on resize/theme changes)
+    // Make the icon as tall as the input (also on resize/theme changes)
     syncHeights(icon, input);
     window.addEventListener('resize', debounce(()=>syncHeights(icon, input), 100));
 
-    // Auto-search after user stops typing for IDLE_MS
+    // Load i18n strings and update UI labels when available
+    loadI18n().then(() => {
+      input.placeholder = L('find', PH_BASE_LABEL) + '...';
+      input.setAttribute('aria-label', L('find', PH_BASE_LABEL));
+      icon.title = L('rebuild_tip', 'Rebuild index & repeat search');
+      icon.setAttribute('aria-label', L('rebuild_tip', 'Rebuild index & repeat search'));
+    });
+
+    // Auto-search after the user stops typing for IDLE_MS
     const queueSearch = () => {
-      setSpin(icon, true);               // spin as soon as typing starts
+      // Start spinning as soon as typing begins
+      setSpin(icon, true);
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
         const q = input.value.trim();
@@ -261,10 +290,10 @@
 
     // Clicking the icon after a search: rebuild cache, then repeat the same search
     icon.addEventListener('click', () => {
-      if (busy) return;                            // ignore while a request is running
+      if (busy) return; // ignore while a request is running
       const q = input.value.trim();
       if (q.length < MIN_CHARS) return;
-      rebuildThenSearch(q, panel, icon);           // <-- fixed behavior
+      rebuildThenSearch(q, panel, icon);
     });
 
     // Close the dropdown on outside click or ESC
@@ -275,7 +304,9 @@
   }
 
   // ---------- boot ----------
-  (document.readyState === 'loading')
-    ? document.addEventListener('DOMContentLoaded', mount, { once:true })
-    : mount();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mount, { once:true });
+  } else {
+    mount();
+  }
 })();
