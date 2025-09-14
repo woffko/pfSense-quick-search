@@ -17,304 +17,552 @@
  */
 
 (function () {
-  const BUILD          = 'InlineQuickSearch v2025-09-12-01';
-  const PH_BASE_LABEL  = 'Find';   // fallback label; will be replaced by i18n if available
-  const MIN_CHARS      = 3;        // minimum query length
-  const IDLE_MS        = 500;      // delay after last keystroke before auto-search
+  // -------------------- Tunables --------------------
+  const BUILD         = 'InlineQuickSearch v2025-09-14-magnifier-spinner-NUDGE-TOP +kbd-single-dispatch';
+  const PH_BASE_LABEL = 'Find';
+  const MIN_CHARS     = 3;
+  const IDLE_MS       = 100;
 
-  // ---------- CSS ----------
+  // Small visual fine-tune so the icon perfectly matches the logo top
+  // (many themes draw 1–2px line/padding differences).
+  const NUDGE_TOP     = -5;  // negative = move a bit higher
+
+  // Debounce helper
+  function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
+
+  // -------------------- CSS --------------------
   (function injectCss(){
-    const id = 'qs-inline-style';
-    if (document.getElementById(id)) return;
+    if (document.getElementById('qs-style-overlay')) return;
     const s = document.createElement('style');
-    s.id = id;
+    s.id = 'qs-style-overlay';
     s.textContent = `
-      #topmenu #pf-navbar .navbar-right{ display:flex; align-items:center; }
-      #topmenu #pf-navbar .navbar-right > li{ display:flex; align-items:center; }
-      #topmenu #pf-navbar .navbar-right > li > a{ display:flex; align-items:center; }
-
-      /* host <li> for the search form (rightmost in navbar) */
-      #topmenu #pf-navbar .navbar-right > li.qs-li{ margin:0; padding:0; }
-
-      /* inline form container */
-      #qs-inline-form.navbar-form.qs-inline{
-        display:inline-flex; margin:0 !important; padding:0 !important; white-space:nowrap; position:relative;
-      }
-      #qs-inline-form .form-group{
-        display:flex; align-items:stretch; gap:8px; margin:0;
+      #qs-nav-li{
+        display:flex; align-items:stretch; height:100%;
       }
 
-      /* compact input (reduced by one third) */
-      #qs-inline-input{ width:120px; min-width:94px; padding:6px 8px; }
-      @media (max-width:1200px){ #qs-inline-input{ width:107px; } }
-      @media (max-width: 992px){ #qs-inline-input{ width:94px; } }
-
-      /* icon button — height is synced via JS to match input exactly */
-      #qs-inline-icon.btn{
+      #qs-nav-icon{
+        --qs-size: 28px;
         display:inline-flex; align-items:center; justify-content:center;
-        padding:0 10px; line-height:normal; min-width:34px;
+        width:var(--qs-size); height:var(--qs-size);
+        margin-left:8px; border-radius:8px;
+        cursor:pointer; user-select:none; outline:none;
+        background:#0b6efd; color:#fff; border:0; line-height:1; padding:0;
+        /* margin-top is computed in JS to align its TOP to the logo TOP */
       }
-      #qs-inline-icon svg{ width:16px; height:16px; pointer-events:none; }
-      @keyframes qs-spin { from{ transform:rotate(0deg);} to{ transform:rotate(360deg);} }
-      #qs-inline-icon.spinning svg{ animation: qs-spin .9s linear infinite; transform-origin: 50% 50%; }
-      #qs-inline-icon:disabled{ opacity:.6; cursor:default; }
+      #qs-nav-icon:focus-visible{ box-shadow:0 0 0 3px rgba(11,110,253,.35); }
+      #qs-nav-icon svg{ width:60%; height:60%; pointer-events:none; }
 
-      /* dropdown panel */
-      #qs-inline-dd{
-        display:none; position:absolute; right:0; top:100%; margin-top:6px;
-        width:480px; max-width:70vw; max-height:60vh; overflow:auto; z-index:100000;
-        background:#fff; border:1px solid #e5e5e5; border-radius:10px;
-        box-shadow:0 14px 30px rgba(0,0,0,.18);
+      #qs-overlay{ position:fixed; left:0; right:0; top:52px; display:none; z-index:100001; }
+      #qs-overlay.open{ display:block; }
+
+      #qs-panel{
+        margin:0 auto; max-width:960px; width:min(90vw,960px);
+        background:#fff; color:#222; border-radius:12px;
+        border:1px solid #e5e7eb; box-shadow:0 18px 40px rgba(0,0,0,.45); overflow:hidden;
       }
-      #qs-inline-dd [data-row]{ padding:10px 12px; border-bottom:1px solid #f3f3f3; cursor:pointer; }
-      #qs-inline-dd [data-row]:hover{ background:#f8f9fb; }
-      #qs-inline-dd .t{ font-weight:600; color:#111; }
-      #qs-inline-dd .p{ font-size:12px; color:#666; margin-top:2px; }
+      @media (prefers-color-scheme: dark){
+        #qs-panel{ background:#1f1f1f; color:#e7e7e7; border-color:rgba(0,0,0,.2); }
+      }
+
+      #qs-top{ display:flex; align-items:center; gap:10px; padding:12px; border-bottom:1px solid rgba(0,0,0,.08); }
+      #qs-input{
+        flex:1 1 auto; height:36px; padding:6px 10px; border-radius:8px;
+        border:1px solid rgba(0,0,0,.15); background:transparent; color:inherit;
+      }
+      #qs-input::placeholder{ opacity:.7; }
+      #qs-whole{ display:flex; align-items:center; gap:6px; white-space:nowrap; font-size:12px; opacity:.9; }
+
+      /* NEW: action button is a magnifier that can spin while searching */
+      #qs-action{
+        display:inline-flex; align-items:center; justify-content:center;
+        width:36px; height:36px; border-radius:8px; border:1px solid rgba(0,0,0,.15);
+        background:transparent; cursor:pointer; color:inherit;
+      }
+      #qs-action:disabled{ opacity:.5; cursor:default; }
+      #qs-action svg{ width:18px; height:18px; pointer-events:none; }
+
+      /* Spinner animation for the magnifier */
+      @keyframes qs-rot { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      #qs-action.spin svg{ animation: qs-rot .9s linear infinite; transform-origin: 50% 50%; }
+
+      #qs-list{ max-height:65vh; overflow:auto; padding:0; margin:0; }
+      .qs-row{ list-style:none; display:flex; align-items:center; gap:14px;
+               padding:12px 14px; border-bottom:1px solid rgba(0,0,0,.06);
+               cursor:pointer; outline:none; }
+      .qs-row:hover{ background:rgba(0,0,0,.06); }
+      .qs-row.focused{ background:rgba(13,110,253,.12); }
+      @media (prefers-color-scheme: dark){
+        .qs-row:hover{ background:rgba(255,255,255,.06); }
+        .qs-row.focused{ background:rgba(13,110,253,.22); }
+      }
+      .qs-title{ flex:1 1 auto; font-weight:600; }
+      .qs-path{ flex:0 0 auto; font-size:12px; opacity:.75; }
+
+      .qs-group{ font-weight:600; }
+      .qs-group .qs-title{ display:flex; align-items:center; gap:10px; }
+      .qs-caret{
+        width:10px; height:10px; display:inline-block;
+        border: solid currentColor; border-width: 0 2px 2px 0; padding:2px;
+        transform: rotate(-45deg);
+      }
+      .qs-row[aria-expanded="true"] .qs-caret{ transform: rotate(45deg); }
+      .qs-child{ padding-left:36px; font-weight:500; }
+
+      .qs-badge{
+        min-width:26px; height:22px; padding:0 8px; display:inline-flex;
+        align-items:center; justify-content:center; border-radius:999px;
+        font-size:12px; font-weight:700; border:1px solid currentColor; opacity:.8;
+      }
+
+      #qs-empty{ padding:10px 14px; font-size:12px; opacity:.8; display:none; border-top:1px solid rgba(0,0,0,.06); }
+      .hidden{ display:none !important; }
     `;
     document.head.appendChild(s);
   })();
 
-  // ---------- i18n helpers ----------
-  // Holds UI strings fetched from the server (active GUI language)
+  // -------------------- i18n --------------------
   let I18N = null;
-
-  // Safe accessor with fallback
   const L = (k, dflt) => (I18N && typeof I18N[k] === 'string') ? I18N[k] : dflt;
-
-  // Fetch translated UI strings from diag_quicksearch.php
   async function loadI18n(){
     try{
       const r = await fetch('/diag_quicksearch.php?i18n=1&t=' + Date.now(), { credentials:'same-origin', cache:'no-store' });
-      if (!r.ok) return;
-      I18N = await r.json();
-    }catch(_e){ /* ignore; fallbacks will be used */ }
+      if (r.ok) I18N = await r.json();
+    }catch(_e){}
   }
 
-  // ---------- generic helpers ----------
-  const escapeHtml = s => (s||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-  const isPathLike = s => /^\/[A-Za-z0-9/_\-.]+(\?.*)?(#.*)?$/.test(s || '');
+  // -------------------- helpers --------------------
+  const escapeHtml   = s => (s||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   const humanizePath = p => (p||'').split('/').pop().replace(/\.php$/i,'').replace(/_/g,' ').replace(/\s+/g,' ').trim().replace(/\b\w/g,c=>c.toUpperCase());
-  const debounce = (fn, ms) => { let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; };
 
   function titleFromItem(it){
-    // Try common fields, then derive from path
     let t = it.page || it.title || it.label || it.name || it.text || it.display || '';
-    if (!t || isPathLike(t)) t = humanizePath(it.path || '');
+    if (!t || /^\/[A-Za-z0-9/_\-.]+/.test(t)) t = humanizePath(it.path || '');
     return t || (it.path||'');
   }
-  const show = p => (p.style.display='block');
-  const hide = p => { p.style.display='none'; p.innerHTML=''; };
 
-  // Make the icon exactly as tall as the input (theme-agnostic)
-  function syncHeights(icon, input){
-    if (!icon || !input) return;
-    requestAnimationFrame(() => {
-      const h = Math.ceil(input.getBoundingClientRect().height);
-      if (!h) return;
-      icon.style.height = h + 'px';
-      icon.style.minHeight = h + 'px';
-      icon.style.lineHeight = h + 'px';
-      // Optional: make the icon perfectly square
-      // icon.style.width = h + 'px';
+  // -------------------- navbar icon (RIGHT side) --------------------
+  function ensureNavIcon(){
+    if (document.getElementById('qs-nav-icon')) return;
+
+    const right = document.querySelector('#topmenu #pf-navbar .navbar-right') ||
+                  document.querySelector('#topmenu .navbar-right');
+    if (!right) return;
+
+    const li  = document.createElement('li');
+    li.id = 'qs-nav-li';
+
+    const btn = document.createElement('button');
+    btn.id = 'qs-nav-icon';
+    btn.title = 'Quick Search';
+    btn.setAttribute('aria-label', 'Quick Search');
+    btn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+      </svg>`;
+    li.appendChild(btn);
+    right.appendChild(li);
+
+    btn.addEventListener('click', toggleOverlay);
+    btn.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' ') { e.preventDefault(); toggleOverlay(); }});
+
+    // Align to the TOP of the pfSense logo
+    alignIconTopToLogoTop();
+    setOverlayTop();
+
+    window.addEventListener('resize', debounce(()=>{
+      alignIconTopToLogoTop();
+      setOverlayTop();
+    }, 120));
+  }
+
+  /**
+   * Align the TOP edge of the magnifier button to the TOP edge of the
+   * pfSense logo in the navbar. We allow NEGATIVE margin-top because
+   * the right navbar column typically has top padding.
+   */
+  function alignIconTopToLogoTop(){
+    const btn = document.getElementById('qs-nav-icon');
+    if (!btn) return;
+
+    const right = document.querySelector('#topmenu #pf-navbar .navbar-right') ||
+                  document.querySelector('#topmenu .navbar-right');
+    const nav   = document.getElementById('topmenu') || document.querySelector('.navbar-fixed-top');
+
+    const brand = document.querySelector('#topmenu .navbar-brand') ||
+                  document.querySelector('.navbar-brand') || null;
+    let logoEl = null;
+    if (brand){
+      logoEl = brand.querySelector('#logo') ||
+               brand.querySelector('svg') ||
+               brand.querySelector('img');
+    }
+    const refEl = logoEl || brand || nav || right;
+    if (!refEl || !right) return;
+
+    const refRect   = refEl.getBoundingClientRect();
+    const rightRect = right.getBoundingClientRect();
+
+    // DO NOT clamp at 0 — allow negative to lift the button up.
+    const offset = Math.round(refRect.top - rightRect.top) + NUDGE_TOP;
+    btn.style.marginTop = offset + 'px';
+  }
+
+  function setOverlayTop(){
+    const overlay = document.getElementById('qs-overlay');
+    const nav = document.getElementById('topmenu') || document.querySelector('.navbar-fixed-top');
+    if (!overlay || !nav) return;
+    const h = Math.round(nav.getBoundingClientRect().height || 52);
+    overlay.style.top = h + 'px';
+  }
+
+  // -------------------- overlay --------------------
+  function buildOverlay(){
+    if (document.getElementById('qs-overlay')) return;
+    const wrap = document.createElement('div');
+    wrap.id = 'qs-overlay';
+    wrap.innerHTML = `
+      <div id="qs-panel" role="dialog" aria-modal="true" aria-label="Quick Search">
+        <div id="qs-top">
+          <input id="qs-input" type="search" placeholder="${PH_BASE_LABEL}..." autocomplete="off">
+          <label id="qs-whole">
+            <input type="checkbox" id="qs-whole-cb">
+            <span>${escapeHtml('Whole words only')}</span>
+          </label>
+          <!-- NEW: magnifier action which spins while searching -->
+          <button id="qs-action" title="${escapeHtml('Rebuild index')}" aria-label="${escapeHtml('Rebuild index')}">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+            </svg>
+          </button>
+        </div>
+        <ul id="qs-list" role="listbox" aria-label="Search results"></ul>
+        <div id="qs-empty"></div>
+      </div>
+    `;
+    document.body.appendChild(wrap);
+
+    document.addEventListener('click', (e)=>{
+      const o = document.getElementById('qs-overlay');
+      if (!o || !o.classList.contains('open')) return;
+      const panel = document.getElementById('qs-panel');
+      if (panel && !panel.contains(e.target) && e.target !== document.getElementById('qs-nav-icon')){
+        closeOverlay();
+      }
+    });
+
+    document.addEventListener('keydown', (e)=>{
+      const o = document.getElementById('qs-overlay');
+      if (!o || !o.classList.contains('open')) return;
+      if (e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); closeOverlay(); }
     });
   }
 
-  // ---------- state ----------
-  let idleTimer = null;   // triggers auto-search after typing idle
-  let inflight = null;    // AbortController for the active fetch
-  let busy = false;       // prevents rebuild clicks while searching
-  let seq = 0;            // guards against out-of-order responses
+  function openOverlay(){
+    buildOverlay();
+    setOverlayTop();
+    const o = document.getElementById('qs-overlay');
+    o.classList.add('open');
+    const i = document.getElementById('qs-input');
+    i.focus(); i.select();
+  }
+  function closeOverlay(){ const o = document.getElementById('qs-overlay'); if (o) o.classList.remove('open'); }
+  function toggleOverlay(){ const o=document.getElementById('qs-overlay'); (o && o.classList.contains('open'))? closeOverlay(): openOverlay(); }
 
-  function setSpin(iconEl, spinning){
-    if (!iconEl) return;
-    if (spinning){
-      iconEl.classList.add('spinning');
-      iconEl.disabled = true;  // disable clicks while spinning/typing/searching
-    } else {
-      iconEl.classList.remove('spinning');
-      iconEl.disabled = false; // enable click for rebuild-after-search
+  // -------------------- grouping --------------------
+  function groupItems(items){
+    const rec = items.map(it => {
+      const full = (titleFromItem(it) || '')
+        .replace(/\s*[:/]\s*/g, ' / ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const segs = full.split(' / ').filter(Boolean);
+      return { full, segs, path: it.path || '' };
+    });
+
+    const freq1 = Object.create(null);
+    const freq2 = Object.create(null);
+    for (const r of rec){
+      if (!r.full) continue;
+      if (r.segs.length >= 1){ const k1=r.segs[0]; freq1[k1]=(freq1[k1]||0)+1; }
+      if (r.segs.length >= 2){ const k2=r.segs.slice(0,2).join(' / '); freq2[k2]=(freq2[k2]||0)+1; }
+    }
+
+    const groupsMap = new Map();
+    const singles   = [];
+
+    for (const r of rec){
+      if (!r.full){ continue; }
+      const k2 = r.segs.length >= 2 ? r.segs.slice(0,2).join(' / ') : '';
+      const k1 = r.segs.length >= 1 ? r.segs[0] : '';
+
+      let key = '';
+      if (k2 && (freq2[k2] || 0) >= 2) key = k2;
+      else if (k1 && (freq1[k1] || 0) >= 2) key = k1;
+
+      if (key){
+        if (!groupsMap.has(key)) groupsMap.set(key, []);
+        groupsMap.get(key).push({ title:r.full, path:r.path });
+      } else {
+        singles.push({ title:r.full, path:r.path });
+      }
+    }
+
+    const groups = Array.from(groupsMap.entries())
+      .map(([title, items]) => ({ title, items: items.sort((a,b)=> a.title.localeCompare(b.title)) }))
+      .sort((a,b)=> (b.items.length - a.items.length) || a.title.localeCompare(b.title));
+
+    singles.sort((a,b)=> a.title.localeCompare(b.title));
+    return { groups, singles };
+  }
+
+  // -------------------- rendering + keyboard --------------------
+  let focusables = [];
+  let keyboardIndex = -1;
+
+  function clearList(){
+    const ul = document.getElementById('qs-list');
+    if (ul) ul.innerHTML='';
+    setEmptyMessage('');
+    focusables = [];
+    keyboardIndex = -1;
+  }
+  function setEmptyMessage(txt){
+    const el = document.getElementById('qs-empty');
+    if (!el) return;
+    if (txt){ el.textContent = txt; el.style.display='block'; }
+    else { el.textContent=''; el.style.display='none'; }
+  }
+  function makeRow({title, path, classes=[], role='option'}){
+    const li = document.createElement('li');
+    li.className = ['qs-row'].concat(classes).join(' ');
+    li.setAttribute('role', role);
+    li.setAttribute('tabindex', '-1');
+    li.innerHTML = `
+      <div class="qs-title">${escapeHtml(title)}</div>
+      ${path ? `<div class="qs-path">${escapeHtml(path)}</div>` : ''}
+    `;
+    return li;
+  }
+
+  function updateFocusables(){
+    const list = document.getElementById('qs-list');
+    focusables = Array.from(list.querySelectorAll('.qs-row')).filter(el => !el.classList.contains('hidden'));
+    if (keyboardIndex >= focusables.length) keyboardIndex = focusables.length - 1;
+    if (keyboardIndex < 0 && focusables.length) keyboardIndex = 0;
+    focusables.forEach(el => el.classList.remove('focused'));
+    if (focusables[keyboardIndex]) {
+      focusables[keyboardIndex].classList.add('focused');
+      focusables[keyboardIndex].focus({preventScroll:true});
+      focusables[keyboardIndex].scrollIntoView({ block:'nearest' });
     }
   }
-  function setBusy(iconEl, isBusy){
-    busy = isBusy;
-    setSpin(iconEl, isBusy);
+
+  function render(items){
+    const list = document.getElementById('qs-list');
+    if (!list) return;
+
+    clearList();
+
+    if (!items || !items.length){
+      setEmptyMessage(L('no_results','No results...'));
+      return;
+    }
+
+    const {groups, singles} = groupItems(items);
+
+    // groups first
+    for (const g of groups){
+      const li = makeRow({ title: g.title, classes:['qs-group'], role:'button' });
+      li.setAttribute('aria-expanded', 'false');
+      li.querySelector('.qs-title').innerHTML = `<span class="qs-caret" aria-hidden="true"></span>${escapeHtml(g.title)}`;
+      const badge = document.createElement('div'); badge.className='qs-badge'; badge.textContent = String(g.items.length);
+      li.appendChild(badge);
+      list.appendChild(li);
+
+      const frag = document.createDocumentFragment();
+      for (const ch of g.items){
+        const row = makeRow({ title: ch.title, path: ch.path, classes:['qs-child','hidden'] });
+        row.addEventListener('click', ()=> { if (ch.path) window.location.assign(ch.path); });
+        frag.appendChild(row);
+      }
+      list.appendChild(frag);
+
+      li.addEventListener('click', ()=>{
+        const open = li.getAttribute('aria-expanded') === 'true';
+        li.setAttribute('aria-expanded', open ? 'false' : 'true');
+        let n = li.nextElementSibling;
+        while (n && !n.classList.contains('qs-group') && !n.classList.contains('qs-single')){
+          if (open) n.classList.add('hidden'); else n.classList.remove('hidden');
+          n = n.nextElementSibling;
+        }
+        updateFocusables();
+      });
+    }
+
+    // singles after groups
+    for (const s of singles){
+      const li = makeRow({ title:s.title, path:s.path, classes:['qs-single'] });
+      li.addEventListener('click', ()=> { if (s.path) window.location.assign(s.path); });
+      list.appendChild(li);
+    }
+
+    keyboardIndex = 0;
+    updateFocusables();
   }
 
-  // ---------- core search ----------
-  // Fetch results and render the dropdown
-  function runQuery(q, panel, iconEl, {rebuild=false} = {}){
-    const query = (q||'').trim();
-    if (query.length < MIN_CHARS){ hide(panel); setSpin(iconEl, false); return; }
+  function focusStep(delta){
+    if (!focusables.length) return;
+    const visible = focusables;
+    let i = keyboardIndex + delta;
+    if (i < 0) i = 0;
+    if (i >= visible.length) i = visible.length - 1;
+    if (i === keyboardIndex) return;
+    visible[keyboardIndex]?.classList.remove('focused');
+    keyboardIndex = i;
+    const el = visible[keyboardIndex];
+    el.classList.add('focused');
+    el.focus({preventScroll:true});
+    el.scrollIntoView({ block:'nearest' });
+  }
 
-    // Cancel any previous request
-    if (inflight){ inflight.abort(); inflight = null; }
+  // Single-dispatch keyboard handler:
+  //  - attached ONLY to document
+  //  - handles keys only when focus is inside the overlay panel
+  //  - stops propagation so it doesn't fire twice
+  function handleKey(e){
+    const overlay = document.getElementById('qs-overlay');
+    if (!overlay || !overlay.classList.contains('open')) return;
 
-    const controller = new AbortController();
-    inflight = controller;
-    setBusy(iconEl, true);
+    const panel = document.getElementById('qs-panel');
+    if (!panel || !panel.contains(e.target)) return; // ignore keys outside the overlay
+
+    const current = focusables[keyboardIndex];
+    const handled = new Set(['ArrowDown','ArrowUp','Home','End','ArrowRight','ArrowLeft','Enter']);
+
+    if (!handled.has(e.key)) return;
+
+    // Prevent the input caret from moving and stop duplicate handlers
+    e.preventDefault();
+    e.stopPropagation();
+
+    switch (e.key){
+      case 'ArrowDown': focusStep(+1); break;
+      case 'ArrowUp':   focusStep(-1); break;
+      case 'Home':      keyboardIndex = 0; updateFocusables(); break;
+      case 'End':       keyboardIndex = focusables.length - 1; updateFocusables(); break;
+      case 'ArrowRight':
+        if (current && current.classList.contains('qs-group') && current.getAttribute('aria-expanded')==='false'){
+          current.click();
+        }
+        break;
+      case 'ArrowLeft':
+        if (current && current.classList.contains('qs-group') && current.getAttribute('aria-expanded')==='true'){
+          current.click();
+        }
+        break;
+      case 'Enter':
+        if (!current) break;
+        if (current.classList.contains('qs-group')){
+          current.click();
+        } else {
+          const path = (current.querySelector('.qs-path')||{}).textContent || '';
+          if (path) window.location.assign(path.trim());
+        }
+        break;
+    }
+  }
+
+  // -------------------- Querying --------------------
+  let inflight = null;
+  let seq = 0;
+  let idleTimer = null;
+
+  // Helper to toggle magnifier spinning state
+  function setActionSpin(on){
+    const btn = document.getElementById('qs-action');
+    if (!btn) return;
+    btn.classList.toggle('spin', !!on);
+  }
+
+  const schedule = ()=>{
+    // Start spinning immediately as user types (before debounce fires)
+    setActionSpin(true);
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(runNow, IDLE_MS);
+  };
+
+  async function rebuildIndex(){
+    const btn = document.getElementById('qs-action');
+    if (!btn) return;
+    try{
+      btn.disabled = true;
+      setActionSpin(true);
+      await fetch('/diag_quicksearch.php?rebuild=1&t='+Date.now(), {credentials:'same-origin'});
+      runNow();
+    }catch(_e){} finally{ btn.disabled = false; }
+  }
+
+  function runNow(){
+    const q = (document.getElementById('qs-input')?.value || '').trim();
+    const wholeChecked = !!document.getElementById('qs-whole-cb')?.checked;
+
+    if (q.length < MIN_CHARS){
+      clearList();
+      setActionSpin(false);
+      if (q.length) setEmptyMessage(L('no_results','No results...'));
+      return;
+    }
+
+    if (inflight) { inflight.abort(); inflight = null; }
+    const controller = new AbortController(); inflight = controller;
     const mySeq = ++seq;
 
-    const url = '/diag_quicksearch.php?q=' + encodeURIComponent(query)
-              + (rebuild ? '&rebuild=1' : '')
-              + '&t=' + Date.now();
+    // Backend expects "ww=1|0"
+    const params = new URLSearchParams();
+    params.set('q', q);
+    params.set('ww', wholeChecked ? '1' : '0');
+    params.set('t', String(Date.now()));
 
-    fetch(url, { credentials:'same-origin', signal: controller.signal, cache:'no-store' })
+    fetch('/diag_quicksearch.php?' + params.toString(),
+      { credentials:'same-origin', signal:controller.signal, cache:'no-store' })
       .then(r => r.json())
-      .then(d => {
-        if (mySeq !== seq) return; // stale response
-        const items = d.items || [];
-        if (!items.length){
-          panel.innerHTML = `<div style="padding:10px 12px; color:#999; font-size:12px;">${escapeHtml(L('no_results','No results...'))}</div>`;
-          show(panel); return;
-        }
-        panel.innerHTML = items.map(it => {
-          const title = titleFromItem(it);
-          const path  = it.path || '';
-          const second = (path && path !== title) ? `<div class="p">${escapeHtml(path)}</div>` : '';
-          return `<div data-row role="option" data-path="${escapeHtml(path)}"><div class="t">${escapeHtml(title)}</div>${second}</div>`;
-        }).join('');
-
-        // Row interactions
-        panel.querySelectorAll('[data-row]').forEach(row => {
-          row.addEventListener('mouseover', () => {
-            panel.querySelectorAll('[data-row]').forEach(r => r.style.background='');
-            row.style.background='#f8f9fb';
-          });
-          row.addEventListener('click', () => {
-            const path = row.getAttribute('data-path') || '';
-            if (/^\/[A-Za-z0-9/_\-.]+(\?.*)?(#.*)?$/.test(path)) window.location.assign(path);
-          });
-        });
-        show(panel);
-      })
+      .then(d => { if (mySeq===seq) render(d.items || []); })
       .catch(err => {
         if (err && err.name === 'AbortError') return;
-        panel.innerHTML = `<div style="padding:10px 12px; color:#c00; font-size:12px;">${escapeHtml(L('request_error','Request error'))}</div>`;
-        show(panel);
+        setEmptyMessage(L('request_error','Request error'));
         console.error('[InlineQuickSearch] fetch error:', err);
       })
-      .finally(() => {
-        if (mySeq !== seq) return;
-        setBusy(iconEl, false);
-        inflight = null;
-      });
+      .finally(()=> { if (mySeq===seq) { inflight = null; setActionSpin(false); } });
   }
 
-  // Rebuild-then-search:
-  // Some backends clear the cache on ?rebuild=1 but don't return items for q in that call.
-  // Do rebuild first (ignore its response), then run a normal search with the same query.
-  async function rebuildThenSearch(q, panel, iconEl){
-    const query = (q||'').trim();
-    if (query.length < MIN_CHARS) return;
-
-    // Stop any running search
-    if (inflight){ inflight.abort(); inflight = null; }
-
-    setBusy(iconEl, true); // keep spinner during rebuild + search
-    try {
-      const url = '/diag_quicksearch.php?rebuild=1&t=' + Date.now();
-      await fetch(url, { credentials:'same-origin', cache:'no-store' });
-    } catch (e) {
-      console.warn('[InlineQuickSearch] rebuild failed (continuing):', e);
-    }
-    // Now run a normal search with the same query
-    runQuery(query, panel, iconEl, {rebuild:false});
-  }
-
-  // ---------- mount ----------
+  // -------------------- Boot --------------------
   function mount(){
-    if (document.getElementById('qs-inline-form')) return;
+    if (document.getElementById('qs-mounted-flag')) return;
+    const flag = document.createElement('meta'); flag.id='qs-mounted-flag'; document.head.appendChild(flag);
 
-    const nav = document.getElementById('topmenu');
-    const rightList = nav && (nav.querySelector('#pf-navbar .navbar-right') || nav.querySelector('.navbar-right'));
-    if (!rightList) return;
+    ensureNavIcon();
+    buildOverlay();
+    setOverlayTop();
 
-    const li = document.createElement('li');
-    li.className = 'qs-li';
-
-    const form = document.createElement('form');
-    form.id = 'qs-inline-form';
-    form.className = 'navbar-form qs-inline';
-    form.setAttribute('role','search');
-    form.setAttribute('autocomplete','off');
-    form.innerHTML = `
-      <div class="form-group">
-        <input id="qs-inline-input" type="search"
-               placeholder="${PH_BASE_LABEL}..."
-               class="form-control input-sm" aria-label="Quick search">
-        <button id="qs-inline-icon" type="button" class="btn btn-default btn-sm"
-                title="Rebuild index & repeat search" aria-label="Rebuild index & repeat search">
-          <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-            <path d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-          </svg>
-        </button>
-      </div>
-      <div id="qs-inline-dd" role="listbox" aria-label="Search results"></div>
-    `;
-    li.appendChild(form);
-    rightList.appendChild(li);
-
-    const input = form.querySelector('#qs-inline-input');
-    const icon  = form.querySelector('#qs-inline-icon');
-    const panel = form.querySelector('#qs-inline-dd');
-
-    // Make the icon as tall as the input (also on resize/theme changes)
-    syncHeights(icon, input);
-    window.addEventListener('resize', debounce(()=>syncHeights(icon, input), 100));
-
-    // Load i18n strings and update UI labels when available
-    loadI18n().then(() => {
-      input.placeholder = L('find', PH_BASE_LABEL) + '...';
-      input.setAttribute('aria-label', L('find', PH_BASE_LABEL));
-      icon.title = L('rebuild_tip', 'Rebuild index & repeat search');
-      icon.setAttribute('aria-label', L('rebuild_tip', 'Rebuild index & repeat search'));
+    loadI18n().then(()=>{
+      const input = document.getElementById('qs-input');
+      if (input) input.placeholder = (L('find', PH_BASE_LABEL) + '...');
     });
 
-    // Auto-search after the user stops typing for IDLE_MS
-    const queueSearch = () => {
-      // Start spinning as soon as typing begins
-      setSpin(icon, true);
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => {
-        const q = input.value.trim();
-        if (q.length >= MIN_CHARS) {
-          runQuery(q, panel, icon, {rebuild:false});
-        } else {
-          setSpin(icon, false);
-          hide(panel);
-        }
-      }, IDLE_MS);
-    };
-    input.addEventListener('input', queueSearch);
+    // Input events
+    document.getElementById('qs-input')?.addEventListener('input', schedule);
+    document.getElementById('qs-whole-cb')?.addEventListener('change', runNow);
+    document.getElementById('qs-action')?.addEventListener('click', rebuildIndex);
 
-    // Pressing Enter triggers immediate search (respecting MIN_CHARS)
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-      setSpin(icon, true);
-      runQuery(input.value.trim(), panel, icon, {rebuild:false});
-    });
-
-    // Clicking the icon after a search: rebuild cache, then repeat the same search
-    icon.addEventListener('click', () => {
-      if (busy) return; // ignore while a request is running
-      const q = input.value.trim();
-      if (q.length < MIN_CHARS) return;
-      rebuildThenSearch(q, panel, icon);
-    });
-
-    // Close the dropdown on outside click or ESC
-    document.addEventListener('click', (e) => { if (!form.contains(e.target)) hide(panel); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(panel); });
+    // IMPORTANT: single keyboard handler on the document
+    // (we no longer bind handleKey to #qs-input or #qs-list to avoid double firing)
+    document.addEventListener('keydown', handleKey);
 
     console.log('[InlineQuickSearch]', BUILD, 'mounted');
   }
 
-  // ---------- boot ----------
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', mount, { once:true });
+  if (document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', mount, {once:true});
   } else {
     mount();
   }
 })();
-
