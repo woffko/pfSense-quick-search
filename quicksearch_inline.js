@@ -8,17 +8,19 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
+ * Overlay Quick Search opened from a compact blue magnifier icon.
+ * - Keyboard nav (↑/↓, ←/→, Home/End, Enter, Esc)
+ * - "Whole words only" toggle (server-side via ?ww=1 or ?ww=0)
+ * - Smart grouping (":" and "/" treated as separators)
+ * - Groups first (by size desc, then name), singles after (alphabetical)
+ * - Navbar icon mounted right AFTER the Help menu item (fallback to right cluster)
+ * - Fine-grained top alignment to pfSense logo via NUDGE_TOP
+ * - In-panel magnifier spins while searching; click it to rebuild index
  */
 
 (function () {
   // -------------------- Tunables --------------------
-  const BUILD         = 'InlineQuickSearch v2025-09-14-magnifier-spinner-NUDGE-TOP +kbd-single-dispatch';
+  const BUILD         = 'InlineQuickSearch v2025-09-14-after-help-mount-fix-li';
   const PH_BASE_LABEL = 'Find';
   const MIN_CHARS     = 3;
   const IDLE_MS       = 100;
@@ -26,6 +28,10 @@
   // Small visual fine-tune so the icon perfectly matches the logo top
   // (many themes draw 1–2px line/padding differences).
   const NUDGE_TOP     = -5;  // negative = move a bit higher
+
+  // Host container where the navbar button was mounted (left or right).
+  // We use it for vertical alignment computations.
+  let qsHostEl = null;
 
   // Debounce helper
   function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
@@ -36,12 +42,15 @@
     const s = document.createElement('style');
     s.id = 'qs-style-overlay';
     s.textContent = `
+      /* IMPORTANT: Use Bootstrap-compatible LI for navbar to avoid hiding/overlap */
       #qs-nav-li{
-        display:flex; align-items:stretch; height:100%;
+        display:block;               /* no flex here — keep Bootstrap expectations */
+        float:left;                  /* .navbar-nav > li normally floats left */
       }
 
       #qs-nav-icon{
         --qs-size: 28px;
+        position:relative; z-index:2; /* keep above neighboring anchors */
         display:inline-flex; align-items:center; justify-content:center;
         width:var(--qs-size); height:var(--qs-size);
         margin-left:8px; border-radius:8px;
@@ -72,7 +81,7 @@
       #qs-input::placeholder{ opacity:.7; }
       #qs-whole{ display:flex; align-items:center; gap:6px; white-space:nowrap; font-size:12px; opacity:.9; }
 
-      /* NEW: action button is a magnifier that can spin while searching */
+      /* In-panel action button: magnifier spins while searching. Click to rebuild index. */
       #qs-action{
         display:inline-flex; align-items:center; justify-content:center;
         width:36px; height:36px; border-radius:8px; border:1px solid rgba(0,0,0,.15);
@@ -140,13 +149,15 @@
     return t || (it.path||'');
   }
 
-  // -------------------- navbar icon (RIGHT side) --------------------
+  // -------------------- navbar icon (mounted after Help menu) --------------------
   function ensureNavIcon(){
     if (document.getElementById('qs-nav-icon')) return;
 
-    const right = document.querySelector('#topmenu #pf-navbar .navbar-right') ||
-                  document.querySelector('#topmenu .navbar-right');
-    if (!right) return;
+    const nav   = document.getElementById('topmenu') || document.querySelector('.navbar-fixed-top') || document;
+    // Prefer the LEFT primary nav (not .navbar-right). Try pfSense container first.
+    const pfbar = document.querySelector('#pf-navbar') || nav;
+    const left  = pfbar.querySelector('.navbar-nav:not(.navbar-right)') || pfbar.querySelector('.navbar-nav') || null;
+    const right = pfbar.querySelector('.navbar-right') || null;
 
     const li  = document.createElement('li');
     li.id = 'qs-nav-li';
@@ -159,12 +170,39 @@
         <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
       </svg>`;
     li.appendChild(btn);
-    right.appendChild(li);
+
+    // Place right AFTER the Help menu (left navbar) when possible.
+    let mounted = false;
+    if (left) {
+      // Try exact last item (pfSense usually has Help as the last <li>)
+      const lastLi = left.querySelector('li:last-child');
+      // Or heuristically locate a link whose text equals "Help" (or localized variants).
+      const helpLi = Array.from(left.querySelectorAll('li')).find(liEl => {
+        const a = liEl.querySelector('a, span');
+        if (!a) return false;
+        const t = (a.textContent || '').trim().toLowerCase();
+        return t === 'help' || t === 'помощь' || t === 'ayuda' || t === 'hilfe' || t === 'aide';
+      }) || lastLi;
+
+      if (helpLi && helpLi.parentElement === left) {
+        helpLi.insertAdjacentElement('afterend', li);
+        qsHostEl = left;
+        mounted = true;
+      }
+    }
+
+    // Fallback: mount in the right cluster if we couldn't use left.
+    if (!mounted && right) {
+      right.appendChild(li);
+      qsHostEl = right;
+      mounted = true;
+    }
+    if (!mounted) return; // give up quietly if there is no navbar
 
     btn.addEventListener('click', toggleOverlay);
     btn.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' ') { e.preventDefault(); toggleOverlay(); }});
 
-    // Align to the TOP of the pfSense logo
+    // Align to the TOP of the pfSense logo and set overlay position.
     alignIconTopToLogoTop();
     setOverlayTop();
 
@@ -177,15 +215,15 @@
   /**
    * Align the TOP edge of the magnifier button to the TOP edge of the
    * pfSense logo in the navbar. We allow NEGATIVE margin-top because
-   * the right navbar column typically has top padding.
+   * the navbar list usually has its own top padding.
+   * IMPORTANT: We compute the offset relative to the real host container
+   * (left or right) that we mounted into.
    */
   function alignIconTopToLogoTop(){
     const btn = document.getElementById('qs-nav-icon');
     if (!btn) return;
 
-    const right = document.querySelector('#topmenu #pf-navbar .navbar-right') ||
-                  document.querySelector('#topmenu .navbar-right');
-    const nav   = document.getElementById('topmenu') || document.querySelector('.navbar-fixed-top');
+    const nav   = document.getElementById('topmenu') || document.querySelector('.navbar-fixed-top') || document;
 
     const brand = document.querySelector('#topmenu .navbar-brand') ||
                   document.querySelector('.navbar-brand') || null;
@@ -195,14 +233,16 @@
                brand.querySelector('svg') ||
                brand.querySelector('img');
     }
-    const refEl = logoEl || brand || nav || right;
-    if (!refEl || !right) return;
+    const refEl  = logoEl || brand || (document.querySelector('#pf-navbar') || nav);
+    const hostEl = qsHostEl || (document.querySelector('#pf-navbar .navbar-right') || nav);
 
-    const refRect   = refEl.getBoundingClientRect();
-    const rightRect = right.getBoundingClientRect();
+    if (!refEl || !hostEl) return;
 
-    // DO NOT clamp at 0 — allow negative to lift the button up.
-    const offset = Math.round(refRect.top - rightRect.top) + NUDGE_TOP;
+    const refRect  = refEl.getBoundingClientRect();
+    const hostRect = hostEl.getBoundingClientRect();
+
+    // DO NOT clamp to >= 0; allow negative to nudge it up.
+    const offset = Math.round(refRect.top - hostRect.top) + NUDGE_TOP;
     btn.style.marginTop = offset + 'px';
   }
 
@@ -227,7 +267,7 @@
             <input type="checkbox" id="qs-whole-cb">
             <span>${escapeHtml('Whole words only')}</span>
           </label>
-          <!-- NEW: magnifier action which spins while searching -->
+          <!-- Magnifier spins while searching; click to rebuild -->
           <button id="qs-action" title="${escapeHtml('Rebuild index')}" aria-label="${escapeHtml('Rebuild index')}">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
@@ -252,7 +292,7 @@
     document.addEventListener('keydown', (e)=>{
       const o = document.getElementById('qs-overlay');
       if (!o || !o.classList.contains('open')) return;
-      if (e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); closeOverlay(); }
+      if (e.key === 'Escape'){ e.preventDefault(); closeOverlay(); }
     });
   }
 
@@ -343,6 +383,7 @@
     return li;
   }
 
+  // Rebuild the list of focusable, VISIBLE rows (prevents "skipping every other item").
   function updateFocusables(){
     const list = document.getElementById('qs-list');
     focusables = Array.from(list.querySelectorAll('.qs-row')).filter(el => !el.classList.contains('hidden'));
@@ -409,6 +450,7 @@
     updateFocusables();
   }
 
+  // Move focus by delta among currently visible items
   function focusStep(delta){
     if (!focusables.length) return;
     const visible = focusables;
@@ -424,50 +466,37 @@
     el.scrollIntoView({ block:'nearest' });
   }
 
-  // Single-dispatch keyboard handler:
-  //  - attached ONLY to document
-  //  - handles keys only when focus is inside the overlay panel
-  //  - stops propagation so it doesn't fire twice
   function handleKey(e){
-    const overlay = document.getElementById('qs-overlay');
-    if (!overlay || !overlay.classList.contains('open')) return;
-
-    const panel = document.getElementById('qs-panel');
-    if (!panel || !panel.contains(e.target)) return; // ignore keys outside the overlay
+    const o = document.getElementById('qs-overlay');
+    if (!o || !o.classList.contains('open')) return;
 
     const current = focusables[keyboardIndex];
-    const handled = new Set(['ArrowDown','ArrowUp','Home','End','ArrowRight','ArrowLeft','Enter']);
-
-    if (!handled.has(e.key)) return;
-
-    // Prevent the input caret from moving and stop duplicate handlers
-    e.preventDefault();
-    e.stopPropagation();
 
     switch (e.key){
-      case 'ArrowDown': focusStep(+1); break;
-      case 'ArrowUp':   focusStep(-1); break;
-      case 'Home':      keyboardIndex = 0; updateFocusables(); break;
-      case 'End':       keyboardIndex = focusables.length - 1; updateFocusables(); break;
+      case 'ArrowDown': e.preventDefault(); focusStep(+1); break;
+      case 'ArrowUp':   e.preventDefault(); focusStep(-1); break;
+      case 'Home':      e.preventDefault(); keyboardIndex = 0; updateFocusables(); break;
+      case 'End':       e.preventDefault(); keyboardIndex = focusables.length - 1; updateFocusables(); break;
       case 'ArrowRight':
         if (current && current.classList.contains('qs-group') && current.getAttribute('aria-expanded')==='false'){
-          current.click();
+          current.click(); e.preventDefault();
         }
         break;
       case 'ArrowLeft':
         if (current && current.classList.contains('qs-group') && current.getAttribute('aria-expanded')==='true'){
-          current.click();
+          current.click(); e.preventDefault();
         }
         break;
       case 'Enter':
         if (!current) break;
-        if (current.classList.contains('qs-group')){
-          current.click();
-        } else {
+        if (current.classList.contains('qs-group')){ current.click(); }
+        else {
           const path = (current.querySelector('.qs-path')||{}).textContent || '';
           if (path) window.location.assign(path.trim());
         }
+        e.preventDefault();
         break;
+      default: break;
     }
   }
 
@@ -476,20 +505,21 @@
   let seq = 0;
   let idleTimer = null;
 
-  // Helper to toggle magnifier spinning state
+  // Toggle in-panel magnifier spinning state
   function setActionSpin(on){
     const btn = document.getElementById('qs-action');
     if (!btn) return;
     btn.classList.toggle('spin', !!on);
   }
 
+  // Debounced search: start spinner immediately on input, stop after fetch
   const schedule = ()=>{
-    // Start spinning immediately as user types (before debounce fires)
     setActionSpin(true);
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(runNow, IDLE_MS);
   };
 
+  // Rebuild index (keeps spinner on and triggers a fresh search)
   async function rebuildIndex(){
     const btn = document.getElementById('qs-action');
     if (!btn) return;
@@ -548,15 +578,15 @@
       if (input) input.placeholder = (L('find', PH_BASE_LABEL) + '...');
     });
 
-    // Input events
     document.getElementById('qs-input')?.addEventListener('input', schedule);
+    document.getElementById('qs-input')?.addEventListener('keydown', handleKey);
+    document.getElementById('qs-list')?.addEventListener('keydown', handleKey);
     document.getElementById('qs-whole-cb')?.addEventListener('change', runNow);
+
+    // Magnifier action in the panel (rebuild + rerun search)
     document.getElementById('qs-action')?.addEventListener('click', rebuildIndex);
 
-    // IMPORTANT: single keyboard handler on the document
-    // (we no longer bind handleKey to #qs-input or #qs-list to avoid double firing)
     document.addEventListener('keydown', handleKey);
-
     console.log('[InlineQuickSearch]', BUILD, 'mounted');
   }
 
