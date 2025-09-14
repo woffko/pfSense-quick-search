@@ -20,7 +20,7 @@
 
 (function () {
   // -------------------- Tunables --------------------
-  const BUILD         = 'InlineQuickSearch v2025-09-14-after-help-mount-fix-li';
+  const BUILD         = 'InlineQuickSearch v2025-09-14-after-help-mount-fix-li+keydown-single';
   const PH_BASE_LABEL = 'Find';
   const MIN_CHARS     = 3;
   const IDLE_MS       = 100;
@@ -578,12 +578,11 @@
       if (input) input.placeholder = (L('find', PH_BASE_LABEL) + '...');
     });
 
+    // NOTE: we intentionally do NOT bind keydown on #qs-input or #qs-list,
+    // because the same event would bubble and also trigger the document handler,
+    // causing "skip every other item". We keep a SINGLE global keydown handler.
     document.getElementById('qs-input')?.addEventListener('input', schedule);
-    document.getElementById('qs-input')?.addEventListener('keydown', handleKey);
-    document.getElementById('qs-list')?.addEventListener('keydown', handleKey);
     document.getElementById('qs-whole-cb')?.addEventListener('change', runNow);
-
-    // Magnifier action in the panel (rebuild + rerun search)
     document.getElementById('qs-action')?.addEventListener('click', rebuildIndex);
 
     document.addEventListener('keydown', handleKey);
