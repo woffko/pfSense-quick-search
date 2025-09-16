@@ -8,39 +8,34 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
  * Overlay Quick Search opened from a compact blue magnifier icon.
- * - Keyboard nav (↑/↓, ←/→, Home/End, Enter, Esc)
+ * - Desktop icon after the last textual menu item; desktop vertical centering to .navbar-header
+ * - Mobile icon inside .navbar-header, placed LEFT to the hamburger button
+ * - Mobile overlay: full-width (100vw), pinned under the navbar
+ * - On mobile, “Whole words only” sits UNDER the search input (grid layout)
+ * - Keyboard nav (↑/↓, ←/→, Home/End, Enter, Esc) without the "skip every other item" bug
+ * - Keeps focus in the input by default; ↑ from first item returns to input; Esc toggles input/close
  * - "Whole words only" toggle (server-side via ?ww=1 or ?ww=0)
- * - Smart grouping (":" and "/" treated as separators)
- * - Groups first (by size desc, then name), singles after (alphabetical)
- * - Navbar icon mounted right AFTER the Help menu item (fallback to right cluster)
- * - Fine-grained top alignment to pfSense logo via NUDGE_TOP
+ * - Smart grouping with prefix merge (e.g., many "Status / …" -> one big "Status")
+ * - Auto-fit navbar container width on desktop (no wrap, capped to viewport); native width on mobile
  * - In-panel magnifier spins while searching; click it to rebuild index
+ * - Last query persisted in localStorage (restored on open)
  */
 
 (function () {
   // -------------------- Tunables --------------------
-  const BUILD         = 'InlineQuickSearch v2025-09-14-after-help-mount-fix-li+keydown-single';
+  const BUILD         = 'InlineQuickSearch v2025-09-15-mobile-header-button+ww-under-input';
   const PH_BASE_LABEL = 'Find';
   const MIN_CHARS     = 3;
   const IDLE_MS       = 100;
 
-  // Small visual fine-tune so the icon perfectly matches the logo top
-  // (many themes draw 1–2px line/padding differences).
-  const NUDGE_TOP     = -5;  // negative = move a bit higher
+  // Desktop micro tuning; mobile ignores transform.
+  const NUDGE_TOP     = 0;
 
-  // Host container where the navbar button was mounted (left or right).
-  // We use it for vertical alignment computations.
+  const LS_KEY_LAST_QUERY = 'pf_qs_last_query';
   let qsHostEl = null;
 
-  // Debounce helper
-  function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
+  const debounce = (fn, ms)=>{ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; };
 
   // -------------------- CSS --------------------
   (function injectCss(){
@@ -48,24 +43,45 @@
     const s = document.createElement('style');
     s.id = 'qs-style-overlay';
     s.textContent = `
-      /* IMPORTANT: Use Bootstrap-compatible LI for navbar to avoid hiding/overlap */
-      #qs-nav-li{
-        display:block;               /* no flex here — keep Bootstrap expectations */
-        float:left;                  /* .navbar-nav > li normally floats left */
-      }
+      /* Desktop nav icon (in the left UL) */
+      #qs-nav-li{ display:block; float:left; }
 
       #qs-nav-icon{
-        --qs-size: 28px;
-        position:relative; z-index:2; /* keep above neighboring anchors */
+        --qs-size:28px;
+        --qs-y: 0px; /* computed on desktop only */
+        position:relative; z-index:2;
         display:inline-flex; align-items:center; justify-content:center;
         width:var(--qs-size); height:var(--qs-size);
         margin-left:8px; border-radius:8px;
         cursor:pointer; user-select:none; outline:none;
         background:#0b6efd; color:#fff; border:0; line-height:1; padding:0;
-        /* margin-top is computed in JS to align its TOP to the logo TOP */
+        transform: translateY(var(--qs-y));
+        will-change: transform;
       }
       #qs-nav-icon:focus-visible{ box-shadow:0 0 0 3px rgba(11,110,253,.35); }
       #qs-nav-icon svg{ width:60%; height:60%; pointer-events:none; }
+
+      /* MOBILE header icon: sits LEFT to the hamburger */
+      #qs-nav-mobile{
+        display:none; /* hidden by default (desktop) */
+        position:relative; z-index:3;
+        width:34px; height:34px; border-radius:8px;
+        background:#0b6efd; color:#fff; border:0;
+        margin: 8px 8px 8px 0; /* small gap from the burger */
+        align-items:center; justify-content:center;
+        line-height:1; padding:0; cursor:pointer;
+      }
+      #qs-nav-mobile svg{ width:60%; height:60%; pointer-events:none; }
+      #qs-nav-mobile:focus-visible{ box-shadow:0 0 0 3px rgba(11,110,253,.35); }
+
+      @media (max-width: 767px){
+        /* Desktop icon hidden on mobile; mobile header icon visible */
+        #qs-nav-li{ display:none; }
+        #qs-nav-mobile{ display:inline-flex; }
+
+        /* No transform offsets on mobile */
+        #qs-nav-icon{ transform:none !important; }
+      }
 
       #qs-overlay{ position:fixed; left:0; right:0; top:52px; display:none; z-index:100001; }
       #qs-overlay.open{ display:block; }
@@ -79,6 +95,14 @@
         #qs-panel{ background:#1f1f1f; color:#e7e7e7; border-color:rgba(0,0,0,.2); }
       }
 
+      /* MOBILE overlay = full width, flat corners */
+      @media (max-width: 767px){
+        #qs-panel{
+          width:100vw; max-width:none; border-radius:0;
+        }
+      }
+
+      /* Desktop top bar: a simple row */
       #qs-top{ display:flex; align-items:center; gap:10px; padding:12px; border-bottom:1px solid rgba(0,0,0,.08); }
       #qs-input{
         flex:1 1 auto; height:36px; padding:6px 10px; border-radius:8px;
@@ -87,7 +111,23 @@
       #qs-input::placeholder{ opacity:.7; }
       #qs-whole{ display:flex; align-items:center; gap:6px; white-space:nowrap; font-size:12px; opacity:.9; }
 
-      /* In-panel action button: magnifier spins while searching. Click to rebuild index. */
+      /* On MOBILE, place the checkbox UNDER the input using CSS grid */
+      @media (max-width: 767px){
+        #qs-top{
+          display:grid;
+          grid-template-columns: 1fr auto;
+          grid-template-areas:
+            "input action"
+            "whole whole";
+          gap: 8px 10px;
+          align-items:center;
+        }
+        #qs-input{ grid-area: input; width:100%; }
+        #qs-action{ grid-area: action; }
+        #qs-whole{ grid-area: whole; }
+      }
+
+      /* In-panel action button (magnifier spins while searching) */
       #qs-action{
         display:inline-flex; align-items:center; justify-content:center;
         width:36px; height:36px; border-radius:8px; border:1px solid rgba(0,0,0,.15);
@@ -95,8 +135,6 @@
       }
       #qs-action:disabled{ opacity:.5; cursor:default; }
       #qs-action svg{ width:18px; height:18px; pointer-events:none; }
-
-      /* Spinner animation for the magnifier */
       @keyframes qs-rot { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       #qs-action.spin svg{ animation: qs-rot .9s linear infinite; transform-origin: 50% 50%; }
 
@@ -155,101 +193,171 @@
     return t || (it.path||'');
   }
 
-  // -------------------- navbar icon (mounted after Help menu) --------------------
+  // Detect Bootstrap collapsed (mobile) navbar
+  function isMobileCollapsed(){
+    const nav = document.getElementById('topmenu') || document.querySelector('.navbar-fixed-top');
+    const toggle = nav?.querySelector('.navbar-toggle');
+    return !!(toggle && getComputedStyle(toggle).display !== 'none');
+  }
+
+  // -------------------- navbar icons (desktop + mobile) --------------------
   function ensureNavIcon(){
-    if (document.getElementById('qs-nav-icon')) return;
+    // Avoid duplicates
+    if (!document.getElementById('qs-nav-icon')){
+      // Desktop icon (inside the menu UL)
+      const nav   = document.getElementById('topmenu') || document.querySelector('.navbar-fixed-top') || document;
+      const pfbar = document.querySelector('#pf-navbar') || nav;
+      const left  = pfbar.querySelector('.navbar-nav:not(.navbar-right)') || pfbar.querySelector('.navbar-nav') || null;
+      const right = pfbar.querySelector('.navbar-right') || null;
 
-    const nav   = document.getElementById('topmenu') || document.querySelector('.navbar-fixed-top') || document;
-    // Prefer the LEFT primary nav (not .navbar-right). Try pfSense container first.
-    const pfbar = document.querySelector('#pf-navbar') || nav;
-    const left  = pfbar.querySelector('.navbar-nav:not(.navbar-right)') || pfbar.querySelector('.navbar-nav') || null;
-    const right = pfbar.querySelector('.navbar-right') || null;
+      const li  = document.createElement('li');
+      li.id = 'qs-nav-li';
 
-    const li  = document.createElement('li');
-    li.id = 'qs-nav-li';
+      const btn = document.createElement('button');
+      btn.id = 'qs-nav-icon';
+      btn.title = 'Quick Search';
+      btn.setAttribute('aria-label', 'Quick Search');
+      btn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+        </svg>`;
+      li.appendChild(btn);
 
-    const btn = document.createElement('button');
-    btn.id = 'qs-nav-icon';
-    btn.title = 'Quick Search';
-    btn.setAttribute('aria-label', 'Quick Search');
-    btn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-      </svg>`;
-    li.appendChild(btn);
+      // Place after the last textual li (usually Help)
+      let mounted = false;
+      if (left) {
+        const lis = Array.from(left.children).filter(el => el.tagName === 'LI');
+        const lastTextLi = [...lis].reverse().find(liEl => {
+          const a = liEl.querySelector('a,span');
+          const txt = (a?.textContent || '').replace(/\s+/g,' ').trim();
+          return !!txt;
+        });
+        if (lastTextLi) {
+          lastTextLi.insertAdjacentElement('afterend', li);
+          qsHostEl = left;
+          mounted = true;
+        }
+      }
+      if (!mounted && right){ right.appendChild(li); qsHostEl = right; mounted = true; }
+    }
 
-    // Place right AFTER the Help menu (left navbar) when possible.
-    let mounted = false;
-    if (left) {
-      // Try exact last item (pfSense usually has Help as the last <li>)
-      const lastLi = left.querySelector('li:last-child');
-      // Or heuristically locate a link whose text equals "Help" (or localized variants).
-      const helpLi = Array.from(left.querySelectorAll('li')).find(liEl => {
-        const a = liEl.querySelector('a, span');
-        if (!a) return false;
-        const t = (a.textContent || '').trim().toLowerCase();
-        return t === 'help' || t === 'помощь' || t === 'ayuda' || t === 'hilfe' || t === 'aide';
-      }) || lastLi;
+    // Create mobile header icon (once)
+    if (!document.getElementById('qs-nav-mobile')){
+      const header = document.querySelector('#pf-navbar .navbar-header') ||
+                     document.querySelector('.navbar-header');
+      if (header){
+        const mobileBtn = document.createElement('button');
+        mobileBtn.id = 'qs-nav-mobile';
+        mobileBtn.type = 'button';
+        mobileBtn.title = 'Quick Search';
+        mobileBtn.setAttribute('aria-label','Quick Search');
+        mobileBtn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+        </svg>`;
 
-      if (helpLi && helpLi.parentElement === left) {
-        helpLi.insertAdjacentElement('afterend', li);
-        qsHostEl = left;
-        mounted = true;
+        // Insert BEFORE the hamburger button -> visually "left of it"
+        const burger = header.querySelector('.navbar-toggle');
+        if (burger){
+          burger.insertAdjacentElement('beforebegin', mobileBtn);
+        } else {
+          header.appendChild(mobileBtn);
+        }
       }
     }
 
-    // Fallback: mount in the right cluster if we couldn't use left.
-    if (!mounted && right) {
-      right.appendChild(li);
-      qsHostEl = right;
-      mounted = true;
-    }
-    if (!mounted) return; // give up quietly if there is no navbar
+    // Bind click handlers (both icons open/close the overlay)
+    document.getElementById('qs-nav-icon')?.addEventListener('click', toggleOverlay);
+    document.getElementById('qs-nav-mobile')?.addEventListener('click', toggleOverlay);
 
-    btn.addEventListener('click', toggleOverlay);
-    btn.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' ') { e.preventDefault(); toggleOverlay(); }});
-
-    // Align to the TOP of the pfSense logo and set overlay position.
-    alignIconTopToLogoTop();
+    // Initial layout passes
+    queueAlign();
+    queueFitNavbarWidth();
     setOverlayTop();
 
-    window.addEventListener('resize', debounce(()=>{
-      alignIconTopToLogoTop();
-      setOverlayTop();
-    }, 120));
+    // Recalculate on UI changes
+    window.addEventListener('resize', debounce(()=>{ queueAlign(); queueFitNavbarWidth(); setOverlayTop(); }, 120));
+
+    const header = document.querySelector('#pf-navbar .navbar-header') ||
+                   document.querySelector('.navbar-header');
+    const collapse = document.querySelector('#pf-navbar') ||
+                     document.querySelector('.navbar-collapse');
+    const moTargets = [header, collapse, collapse?.querySelector('.navbar-right')].filter(Boolean);
+    for (const target of moTargets){
+      const mo = new MutationObserver(debounce(()=>{ queueAlign(); queueFitNavbarWidth(); }, 50));
+      mo.observe(target, { attributes:true, childList:true, subtree:true, characterData:true });
+    }
+
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(()=>{ queueAlign(); queueFitNavbarWidth(); });
+    }
+    window.addEventListener('load', ()=>{ queueAlign(); queueFitNavbarWidth(); }, { once:true });
   }
 
-  /**
-   * Align the TOP edge of the magnifier button to the TOP edge of the
-   * pfSense logo in the navbar. We allow NEGATIVE margin-top because
-   * the navbar list usually has its own top padding.
-   * IMPORTANT: We compute the offset relative to the real host container
-   * (left or right) that we mounted into.
-   */
-  function alignIconTopToLogoTop(){
-    const btn = document.getElementById('qs-nav-icon');
-    if (!btn) return;
+  // ---------- Desktop vertical centering (disabled on mobile) ----------
+  function queueAlign(){ requestAnimationFrame(()=> requestAnimationFrame(alignIconToHeaderCenter)); }
 
-    const nav   = document.getElementById('topmenu') || document.querySelector('.navbar-fixed-top') || document;
+  function alignIconToHeaderCenter(){
+    const btn = document.getElementById('qs-nav-icon'); if (!btn) return;
 
-    const brand = document.querySelector('#topmenu .navbar-brand') ||
-                  document.querySelector('.navbar-brand') || null;
-    let logoEl = null;
-    if (brand){
-      logoEl = brand.querySelector('#logo') ||
-               brand.querySelector('svg') ||
-               brand.querySelector('img');
+    if (isMobileCollapsed()){
+      btn.style.setProperty('--qs-y', '0px');
+      return;
     }
-    const refEl  = logoEl || brand || (document.querySelector('#pf-navbar') || nav);
-    const hostEl = qsHostEl || (document.querySelector('#pf-navbar .navbar-right') || nav);
 
-    if (!refEl || !hostEl) return;
+    const header = document.querySelector('#pf-navbar .navbar-header') ||
+                   document.querySelector('.navbar-header');
+    if (!header) return;
 
-    const refRect  = refEl.getBoundingClientRect();
-    const hostRect = hostEl.getBoundingClientRect();
+    btn.style.setProperty('--qs-y', '0px');
 
-    // DO NOT clamp to >= 0; allow negative to nudge it up.
-    const offset = Math.round(refRect.top - hostRect.top) + NUDGE_TOP;
-    btn.style.marginTop = offset + 'px';
+    const hRect   = header.getBoundingClientRect();
+    const bRect   = btn.getBoundingClientRect();
+
+    const headerCenterY = hRect.top + hRect.height / 2;
+    const btnCenterY    = bRect.top + bRect.height / 2;
+
+    const dy = (headerCenterY - btnCenterY) + NUDGE_TOP;
+    btn.style.setProperty('--qs-y', dy + 'px');
+  }
+
+  // ---------- Auto width fit (desktop only) ----------
+  function queueFitNavbarWidth(){ requestAnimationFrame(()=> requestAnimationFrame(fitNavbarWidth)); }
+
+  function fitNavbarWidth(){
+    const nav = document.getElementById('topmenu') || document.querySelector('.navbar-fixed-top');
+    const container = nav?.querySelector('.container');
+    if (!nav || !container) return;
+
+    // Mobile: restore native Bootstrap width
+    if (isMobileCollapsed()){
+      container.style.width = '';
+      container.style.marginLeft = '';
+      container.style.marginRight = '';
+      return;
+    }
+
+    const header   = nav.querySelector('.navbar-header');
+    const collapse = nav.querySelector('#pf-navbar') || nav.querySelector('.navbar-collapse');
+    const left     = collapse?.querySelector('.navbar-nav:not(.navbar-right)');
+    const right    = collapse?.querySelector('.navbar-right');
+
+    const wHeader = header  ? header.getBoundingClientRect().width  : 0;
+    const wLeft   = left    ? left.getBoundingClientRect().width    : 0;
+    const wRight  = right   ? right.getBoundingClientRect().width   : 0;
+
+    const GAP = 24;
+    const EXTRA = 16;
+
+    const needed = Math.ceil(wHeader + wLeft + wRight + GAP + EXTRA);
+    const viewport = Math.floor(document.documentElement.clientWidth || window.innerWidth);
+
+    const target = Math.min(needed, viewport);
+    const curW   = Math.ceil(container.getBoundingClientRect().width);
+
+    if (Math.abs(curW - target) > 1) {
+      container.style.width = target + 'px';
+      container.style.marginLeft = 'auto';
+      container.style.marginRight = 'auto';
+    }
   }
 
   function setOverlayTop(){
@@ -273,7 +381,6 @@
             <input type="checkbox" id="qs-whole-cb">
             <span>${escapeHtml('Whole words only')}</span>
           </label>
-          <!-- Magnifier spins while searching; click to rebuild -->
           <button id="qs-action" title="${escapeHtml('Rebuild index')}" aria-label="${escapeHtml('Rebuild index')}">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
@@ -290,7 +397,9 @@
       const o = document.getElementById('qs-overlay');
       if (!o || !o.classList.contains('open')) return;
       const panel = document.getElementById('qs-panel');
-      if (panel && !panel.contains(e.target) && e.target !== document.getElementById('qs-nav-icon')){
+      if (panel && !panel.contains(e.target) &&
+          e.target !== document.getElementById('qs-nav-icon') &&
+          e.target !== document.getElementById('qs-nav-mobile')){
         closeOverlay();
       }
     });
@@ -305,10 +414,15 @@
   function openOverlay(){
     buildOverlay();
     setOverlayTop();
-    const o = document.getElementById('qs-overlay');
-    o.classList.add('open');
-    const i = document.getElementById('qs-input');
-    i.focus(); i.select();
+
+    const last = localStorage.getItem(LS_KEY_LAST_QUERY);
+    const input = document.getElementById('qs-input');
+    if (last && input) { input.value = last; }
+
+    document.getElementById('qs-overlay').classList.add('open');
+    input.focus(); input.select();
+
+    if (last && last.trim().length >= MIN_CHARS) runNow();
   }
   function closeOverlay(){ const o = document.getElementById('qs-overlay'); if (o) o.classList.remove('open'); }
   function toggleOverlay(){ const o=document.getElementById('qs-overlay'); (o && o.classList.contains('open'))? closeOverlay(): openOverlay(); }
@@ -352,12 +466,30 @@
       }
     }
 
-    const groups = Array.from(groupsMap.entries())
-      .map(([title, items]) => ({ title, items: items.sort((a,b)=> a.title.localeCompare(b.title)) }))
-      .sort((a,b)=> (b.items.length - a.items.length) || a.title.localeCompare(b.title));
+    // Merge groups that share the same prefix before the first '/'
+    const merged = new Map();
+    for (const [title, itemsArr] of groupsMap.entries()){
+      const prefix = title.split(' / ')[0];
+      if (!merged.has(prefix)) merged.set(prefix, []);
+      merged.get(prefix).push({ title, items: itemsArr });
+    }
 
+    const finalGroups = [];
+    for (const [prefix, arr] of merged.entries()){
+      if (arr.length === 1){
+        finalGroups.push({ title: arr[0].title, items: arr[0].items });
+      } else {
+        const flat = [];
+        for (const g of arr) flat.push(...g.items);
+        flat.sort((a,b)=> a.title.localeCompare(b.title));
+        finalGroups.push({ title: prefix, items: flat });
+      }
+    }
+
+    finalGroups.sort((a,b)=> (b.items.length - a.items.length) || a.title.localeCompare(b.title));
     singles.sort((a,b)=> a.title.localeCompare(b.title));
-    return { groups, singles };
+
+    return { groups: finalGroups, singles };
   }
 
   // -------------------- rendering + keyboard --------------------
@@ -389,17 +521,18 @@
     return li;
   }
 
-  // Rebuild the list of focusable, VISIBLE rows (prevents "skipping every other item").
-  function updateFocusables(){
+  function updateFocusables(autofocus = false){
     const list = document.getElementById('qs-list');
     focusables = Array.from(list.querySelectorAll('.qs-row')).filter(el => !el.classList.contains('hidden'));
     if (keyboardIndex >= focusables.length) keyboardIndex = focusables.length - 1;
-    if (keyboardIndex < 0 && focusables.length) keyboardIndex = 0;
+    if (keyboardIndex < 0 && autofocus && focusables.length) keyboardIndex = 0;
+
     focusables.forEach(el => el.classList.remove('focused'));
-    if (focusables[keyboardIndex]) {
-      focusables[keyboardIndex].classList.add('focused');
-      focusables[keyboardIndex].focus({preventScroll:true});
-      focusables[keyboardIndex].scrollIntoView({ block:'nearest' });
+    if (keyboardIndex >= 0 && focusables[keyboardIndex]) {
+      const el = focusables[keyboardIndex];
+      el.classList.add('focused');
+      el.focus({preventScroll:true});
+      el.scrollIntoView({ block:'nearest' });
     }
   }
 
@@ -416,7 +549,6 @@
 
     const {groups, singles} = groupItems(items);
 
-    // groups first
     for (const g of groups){
       const li = makeRow({ title: g.title, classes:['qs-group'], role:'button' });
       li.setAttribute('aria-expanded', 'false');
@@ -438,35 +570,32 @@
         li.setAttribute('aria-expanded', open ? 'false' : 'true');
         let n = li.nextElementSibling;
         while (n && !n.classList.contains('qs-group') && !n.classList.contains('qs-single')){
-          if (open) n.classList.add('hidden'); else n.classList.remove('hidden');
+          n.classList.toggle('hidden', open);
           n = n.nextElementSibling;
         }
-        updateFocusables();
+        updateFocusables(false);
       });
     }
 
-    // singles after groups
     for (const s of singles){
       const li = makeRow({ title:s.title, path:s.path, classes:['qs-single'] });
       li.addEventListener('click', ()=> { if (s.path) window.location.assign(s.path); });
       list.appendChild(li);
     }
 
-    keyboardIndex = 0;
-    updateFocusables();
+    keyboardIndex = -1;
+    updateFocusables(false);
   }
 
-  // Move focus by delta among currently visible items
   function focusStep(delta){
     if (!focusables.length) return;
-    const visible = focusables;
     let i = keyboardIndex + delta;
     if (i < 0) i = 0;
-    if (i >= visible.length) i = visible.length - 1;
+    if (i >= focusables.length) i = focusables.length - 1;
     if (i === keyboardIndex) return;
-    visible[keyboardIndex]?.classList.remove('focused');
+    if (keyboardIndex >= 0) focusables[keyboardIndex]?.classList.remove('focused');
     keyboardIndex = i;
-    const el = visible[keyboardIndex];
+    const el = focusables[keyboardIndex];
     el.classList.add('focused');
     el.focus({preventScroll:true});
     el.scrollIntoView({ block:'nearest' });
@@ -476,23 +605,68 @@
     const o = document.getElementById('qs-overlay');
     if (!o || !o.classList.contains('open')) return;
 
-    const current = focusables[keyboardIndex];
+    const inputEl = document.getElementById('qs-input');
+    const current = (keyboardIndex >= 0) ? focusables[keyboardIndex] : null;
 
     switch (e.key){
-      case 'ArrowDown': e.preventDefault(); focusStep(+1); break;
-      case 'ArrowUp':   e.preventDefault(); focusStep(-1); break;
-      case 'Home':      e.preventDefault(); keyboardIndex = 0; updateFocusables(); break;
-      case 'End':       e.preventDefault(); keyboardIndex = focusables.length - 1; updateFocusables(); break;
+      case 'ArrowDown':
+        if (document.activeElement === inputEl) {
+          if (focusables.length) { keyboardIndex = 0; updateFocusables(true); }
+          e.preventDefault();
+        } else { e.preventDefault(); focusStep(+1); }
+        break;
+
+      case 'ArrowUp':
+        if (document.activeElement === inputEl) {
+          // stay in input
+        } else {
+          if (keyboardIndex <= 0) {
+            e.preventDefault();
+            focusables[0]?.classList.remove('focused');
+            keyboardIndex = -1;
+            inputEl.focus({preventScroll:true});
+            inputEl.select();
+          } else {
+            e.preventDefault();
+            focusStep(-1);
+          }
+        }
+        break;
+
+      case 'Home':
+        e.preventDefault();
+        if (focusables.length){ keyboardIndex = 0; updateFocusables(true); }
+        break;
+
+      case 'End':
+        e.preventDefault();
+        if (focusables.length){ keyboardIndex = focusables.length - 1; updateFocusables(true); }
+        break;
+
       case 'ArrowRight':
         if (current && current.classList.contains('qs-group') && current.getAttribute('aria-expanded')==='false'){
           current.click(); e.preventDefault();
         }
         break;
+
       case 'ArrowLeft':
         if (current && current.classList.contains('qs-group') && current.getAttribute('aria-expanded')==='true'){
           current.click(); e.preventDefault();
         }
         break;
+
+      case 'Escape':
+        e.preventDefault();
+        if (document.activeElement !== inputEl) {
+          focusables[keyboardIndex]?.classList.remove('focused');
+          keyboardIndex = -1;
+          inputEl.focus({preventScroll:true});
+          inputEl.select();
+        } else {
+          closeOverlay();
+        }
+        break;
+
       case 'Enter':
         if (!current) break;
         if (current.classList.contains('qs-group')){ current.click(); }
@@ -502,7 +676,15 @@
         }
         e.preventDefault();
         break;
-      default: break;
+
+      default:
+        if (keyboardIndex >= 0 &&
+            e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          const pos = inputEl.selectionStart;
+          inputEl.focus();
+          inputEl.setSelectionRange(pos, pos);
+        }
+        break;
     }
   }
 
@@ -511,21 +693,20 @@
   let seq = 0;
   let idleTimer = null;
 
-  // Toggle in-panel magnifier spinning state
   function setActionSpin(on){
     const btn = document.getElementById('qs-action');
     if (!btn) return;
     btn.classList.toggle('spin', !!on);
   }
 
-  // Debounced search: start spinner immediately on input, stop after fetch
   const schedule = ()=>{
     setActionSpin(true);
+    const v = (document.getElementById('qs-input')?.value || '');
+    try{ localStorage.setItem(LS_KEY_LAST_QUERY, v); }catch(_e){}
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(runNow, IDLE_MS);
   };
 
-  // Rebuild index (keeps spinner on and triggers a fresh search)
   async function rebuildIndex(){
     const btn = document.getElementById('qs-action');
     if (!btn) return;
@@ -541,6 +722,8 @@
     const q = (document.getElementById('qs-input')?.value || '').trim();
     const wholeChecked = !!document.getElementById('qs-whole-cb')?.checked;
 
+    try{ localStorage.setItem(LS_KEY_LAST_QUERY, q); }catch(_e){}
+
     if (q.length < MIN_CHARS){
       clearList();
       setActionSpin(false);
@@ -552,7 +735,6 @@
     const controller = new AbortController(); inflight = controller;
     const mySeq = ++seq;
 
-    // Backend expects "ww=1|0"
     const params = new URLSearchParams();
     params.set('q', q);
     params.set('ww', wholeChecked ? '1' : '0');
@@ -584,14 +766,11 @@
       if (input) input.placeholder = (L('find', PH_BASE_LABEL) + '...');
     });
 
-    // NOTE: we intentionally do NOT bind keydown on #qs-input or #qs-list,
-    // because the same event would bubble and also trigger the document handler,
-    // causing "skip every other item". We keep a SINGLE global keydown handler.
+    document.addEventListener('keydown', handleKey);
     document.getElementById('qs-input')?.addEventListener('input', schedule);
     document.getElementById('qs-whole-cb')?.addEventListener('change', runNow);
     document.getElementById('qs-action')?.addEventListener('click', rebuildIndex);
 
-    document.addEventListener('keydown', handleKey);
     console.log('[InlineQuickSearch]', BUILD, 'mounted');
   }
 
@@ -601,4 +780,3 @@
     mount();
   }
 })();
-
