@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 declare(strict_types=1);
 
 // ---------- AUTH ----------
@@ -31,27 +30,27 @@ header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
 // ---------- SETTINGS ----------
-$q           = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
-$limit       = 50;
+// NOTE: default limit raised to 100; allow ?limit=... clamped to [1..200].  <-- (CHANGE)
+$q                 = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+$limit             = (int)($_GET['limit'] ?? 100);
+$limit             = max(1, min($limit, 200));
 
-/* Whole-words flag:
- * - Expected query param is "ww" (not "whole")
- * - Any truthy non-"0" value -> true
- */
-$whole_words = isset($_GET['ww']) ? ((string)$_GET['ww'] !== '0') : false;
+// Whole words flag: frontend sends ?ww=1|0. Keep raw value for debug.       <-- (CHANGE)
+$raw_ww            = isset($_GET['ww']) ? (string)$_GET['ww'] : '';
+$whole_words       = ($raw_ww === '1' || strtolower($raw_ww) === 'true');
 
 // Shared-memory cache sizes/keys
-$ram_size     = 6 * 1024 * 1024;
-$index_key    = 'qs_src_idx';
-$index_ts_key = 'qs_src_idx_ts';
-$index_ttl    = 1800;  // seconds
-$lock_key     = 'qs_build_lock';
-$lock_ttl     = 20;    // seconds
+$ram_size          = 6 * 1024 * 1024;
+$index_key         = 'qs_src_idx';
+$index_ts_key      = 'qs_src_idx_ts';
+$index_ttl         = 1800;  // seconds
+$lock_key          = 'qs_build_lock';
+$lock_ttl          = 20;    // seconds
 
 // Synonyms cache (multilingual)
-$syn_key  = 'qs_syn_map';
-$syn_ts_key = 'qs_syn_ts';
-$syn_ttl = 1800;       // seconds
+$syn_key           = 'qs_syn_map';
+$syn_ts_key        = 'qs_syn_ts';
+$syn_ttl           = 1800;  // seconds
 
 // Scan limits for /usr/local/www
 $max_files         = 10000; // max number of PHP files to index
@@ -112,8 +111,10 @@ $cache = new QsCache('/usr/local/www/index.php', 'Q', $ram_size);
 
 // ---------- ADMIN/UTILITY ENDPOINTS ----------
 
-/* Rebuild:
- * Clears source index, synonyms and build lock.
+/*
+ * Rebuild endpoint:
+ * - Clears source index, synonyms and build lock.
+ * - Frontend calls this before a forced re-search.
  */
 if (isset($_GET['rebuild'])) {
   $cache->set($index_key, null);
@@ -125,7 +126,10 @@ if (isset($_GET['rebuild'])) {
   exit;
 }
 
-/* i18n labels for the UI widget */
+/*
+ * i18n strings endpoint for the JS widget:
+ * - Returns a small set of UI labels translated to active GUI language.
+ */
 if (isset($_GET['i18n'])) {
   echo json_encode([
     'find'          => gettext('Find'),
@@ -138,20 +142,29 @@ if (isset($_GET['i18n'])) {
 
 // ---------- TEXT/UNICODE HELPERS ----------
 
+/**
+ * Normalize a UI text snippet: strip HTML, collapse whitespace, truncate.
+ */
 function norm_text(string $s, int $max = 220): string {
   $s = html_entity_decode($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
   $s = strip_tags($s);
   $s = preg_replace('/\s+/u', ' ', $s);
   $s = trim($s);
   if ($s === '') return '';
-  if (mb_strlen($s) > $max) $s = mb_substr($s, 0, $max) . 'вЂ¦';
+  if (mb_strlen($s) > $max) $s = mb_substr($s, 0, $max) . '…';
   return $s;
 }
 
+/**
+ * Heuristic: looks like a meaningful text line (has letters and len>=3).
+ */
 function looks_meaningful(string $s): bool {
   return (mb_strlen($s) >= 3) && (bool)preg_match('/[\p{L}]/u', $s);
 }
 
+/**
+ * Humanize a file name into a readable title (fallback).
+ */
 function prettify_filename(string $base): string {
   $t = preg_replace('~\.php$~i', '', $base);
   $t = str_replace('_', ' ', $t);
@@ -161,8 +174,8 @@ function prettify_filename(string $base): string {
 }
 
 /**
- * Decide if a path must be suppressed from index/results.
- * NEW: explicitly skip this backend itself (diag_quicksearch.php).
+ * Decide if a path should be suppressed from index and results (edit forms, widgets, backend self).
+ * NOTE: This now also excludes this backend from search results.         <-- (CHANGE)
  */
 function should_skip_path(string $path): bool {
   $lp = strtolower($path);
@@ -170,18 +183,24 @@ function should_skip_path(string $path): bool {
   $base = strtolower(basename($lp));
   if (strpos($base, 'edit') !== false) return true;    // *_edit.php, pkg_edit.php, etc.
   if (strpos($base, 'widget') !== false) return true;  // filenames containing "widget"
-
-  // *** IMPORTANT EXCLUSION ***
-  // Skip the backend itself. Works for both FS path and web path.
-  if ($base === 'diag_quicksearch.php') return true;
-
+  // Avoid showing the quicksearch backend and helpers themselves:
+  if ($base === 'diag_quicksearch.php' || $base === 'quicksearch_inline.php') return true;
+  if (strpos($lp, '/diag_quicksearch.php') !== false) return true;
   return false;
 }
 
+/**
+ * Localize a label to current GUI language:
+ *  1) Try pfSense main domain.
+ *  2) If path is a package (/pkg.php?xml=<pkg>.xml), try pfSense-pkg-<pkg>.
+ */
 function tr(string $s, string $path = ''): string {
   if ($s === '') return $s;
+  // main pfSense domain
   $t = function_exists('dgettext') ? dgettext('pfSense', $s) : gettext($s);
   if ($t !== $s) return $t;
+
+  // package domain guess (e.g., pfSense-pkg-filer)
   if ($path && preg_match('~^/pkg\.php\?xml=([a-z0-9_-]+)\.xml~i', $path, $m)) {
     $dom = 'pfSense-pkg-' . $m[1];
     if (function_exists('dgettext')) {
@@ -189,21 +208,39 @@ function tr(string $s, string $path = ''): string {
       if ($u !== $s) return $u;
     }
   }
-  return $s;
+  return $s; // fallback to original
 }
 
+/**
+ * Translate a breadcrumb-like title token-by-token.
+ * Supports separators "/", ":" with arbitrary surrounding spaces.
+ * Each token is looked up via gettext (pfSense domain + optional package domain).
+ */
 function tr_title_smart(string $s, string $path = ''): string {
   if ($s === '') return $s;
+
+  // Split and keep delimiters to reassemble original punctuation/spaces
   $parts = preg_split('/(\s*(?:\/|:)\s*)/u', $s, -1, PREG_SPLIT_DELIM_CAPTURE);
-  if (!is_array($parts) || !$parts) return tr($s, $path);
+  if (!is_array($parts) || !$parts) {
+    // Fallback: translate as a whole phrase
+    return tr($s, $path);
+  }
+
+  // Even indexes are tokens, odd indexes are the captured separators
   for ($i = 0; $i < count($parts); $i += 2) {
     $tok = trim($parts[$i]);
-    if ($tok !== '') $parts[$i] = tr($tok, $path);
+    if ($tok !== '') {
+      $parts[$i] = tr($tok, $path);
+    }
   }
   return implode('', $parts);
 }
 
 // ---------- MULTILINGUAL NORMALIZATION ----------
+
+/**
+ * Normalize & lowercase (NFC where possible).
+ */
 function u_norm(string $s): string {
   if (class_exists('Normalizer')) {
     $s = Normalizer::normalize($s, Normalizer::FORM_C);
@@ -213,9 +250,12 @@ function u_norm(string $s): string {
   return mb_strtolower(trim($s), 'UTF-8');
 }
 
+/**
+ * Fold diacritics and normalize variant letters (e.g., ё->е, ß->ss).
+ */
 function u_fold(string $s): string {
   $s = u_norm($s);
-  $s = str_replace('С‘', 'Рµ', $s);
+  $s = str_replace('ё', 'е', $s);
   if (class_exists('Normalizer')) {
     $d = Normalizer::normalize($s, Normalizer::FORM_D);
     if ($d !== false) {
@@ -223,10 +263,13 @@ function u_fold(string $s): string {
       $s = Normalizer::normalize($s, Normalizer::FORM_C) ?: $s;
     }
   }
-  $s = str_replace('Гџ', 'ss', $s);
+  $s = str_replace('ß', 'ss', $s);
   return $s;
 }
 
+/**
+ * Best-effort transliteration to Latin ASCII for cross-language matching.
+ */
 function u_translit_any_latin(string $s): string {
   if (function_exists('transliterator_transliterate')) {
     $t = @transliterator_transliterate('Any-Latin; Latin-ASCII', $s);
@@ -236,22 +279,40 @@ function u_translit_any_latin(string $s): string {
   return is_string($t) ? $t : $s;
 }
 
+/**
+ * Tokenize into folded alphanumeric tokens.
+ */
 function u_tokens(string $s): array {
   $s = u_fold($s);
   $parts = preg_split('/[^\p{L}\p{N}]+/u', $s, -1, PREG_SPLIT_NO_EMPTY);
   return $parts ?: [];
 }
 
+/**
+ * Very light Russian stemmer for UI matching (handles common endings).
+ * Example: настройки ~ настройка -> "настройк".
+ * If not Cyrillic or result too short, returns the original input.
+ */
 function ru_stem_light(string $s): string {
-  if (!preg_match('/[Рђ-РЇР°-СЏРЃС‘]/u', $s)) return $s;
+  if (!preg_match('/[А-Яа-яЁё]/u', $s)) return $s; // only for Cyrillic
   $w = $s;
-  $w = preg_replace('/(Р°РјРё|СЏРјРё|РѕРіРѕ|РµРјСѓ|С‹РјРё|РёРјРё|РёРµР№|РёСЏС…|СЏС…|РµРІ|С‘РІ|РѕРІ|РёРµ|С‹Рµ|РёР№|С‹Р№|РѕР№|Р°СЏ|СЏСЏ|СѓСЋ|СЊСЋ|Р°Рј|СЏРј|Р°С…|СЏС…|РєРё|РєР°|РѕРє|РµРє)$/u', '', $w, 1);
-  $w = preg_replace('/[Р°РµРёРѕСѓС‹СЌСЋСЏР№СЊСЉ]$/u', '', $w, 1);
+
+  // Common 2–3 letter endings
+  $w = preg_replace('/(ами|ями|ого|ему|ыми|ими|ией|иях|ях|ев|ёв|ов|ие|ые|ий|ый|ой|ая|яя|ую|ью|ам|ям|ах|ях|ки|ка|ок|ек)$/u', '', $w, 1);
+  // One-letter endings
+  $w = preg_replace('/[аеиоуыэюяйьъ]$/u', '', $w, 1);
+
   if (mb_strlen($w, 'UTF-8') >= 4) return $w;
   return $s;
 }
 
-// ---------- SYNONYMS ----------
+/**
+ * Load multilingual synonyms from disk:
+ *  - /usr/local/share/pfSense/quicksearch/synonyms/*.json
+ *  - Each file: { "phrase": ["syn1","syn2"] }
+ *  - Keys and values are folded for matching.
+ *  - Includes a small built-in fallback for common terms.
+ */
 function load_synonyms_from_disk(): array {
   $root = '/usr/local/share/pfSense/quicksearch/synonyms';
   $map = [];
@@ -264,13 +325,13 @@ function load_synonyms_from_disk(): array {
       $map[$k] = array_values(array_unique(array_filter($arr, 'strlen')));
     }
   }
-  // Minimal built-in fallback
+  // Minimal fallback to work out-of-the-box
   $fallback = [
-    'С„Р°Р№Р»РµСЂ'             => ['filer','file manager'],
-    'С„Р°Р№Р»РѕРІС‹Р№ РјРµРЅРµРґР¶РµСЂ'  => ['file manager','filer'],
-    'РґРёСЃРїРµС‚С‡РµСЂ С„Р°Р№Р»РѕРІ'   => ['file manager','filer'],
-    'РЅР°СЃС‚СЂРѕР№РєР°'          => ['settings','configuration','setup'],
-    'РЅР°СЃС‚СЂРѕР№РєРё'          => ['settings','configuration'],
+    'файлер'             => ['filer','file manager'],
+    'файловый менеджер'  => ['file manager','filer'],
+    'диспетчер файлов'   => ['file manager','filer'],
+    'настройка'          => ['settings','configuration','setup'],
+    'настройки'          => ['settings','configuration'],
     'failihaldur'        => ['file manager','filer'],
     'failide haldus'     => ['file manager'],
     'fail'               => ['file'],
@@ -283,31 +344,48 @@ function load_synonyms_from_disk(): array {
   return $map;
 }
 
-function expand_query_terms(string $q, array $syn_map): array {
+/**
+ * Expand query terms with synonyms and transliteration tokens.
+ */
+function expand_query_terms(string $q, array $syn_map, bool $whole_words): array {
+  // For whole-words strict mode we DO NOT expand with substrings,
+  // but synonyms/transliteration tokens are still helpful for languages.
   $base  = u_tokens($q);
   $extra = [];
+
+  // synonyms expansion
   foreach ($base as $t) {
     if (!empty($syn_map[$t])) $extra = array_merge($extra, (array)$syn_map[$t]);
   }
+
+  // transliteration expansion
   $lat = u_translit_any_latin($q);
   if ($lat && $lat !== $q) {
     $extra = array_merge($extra, u_tokens($lat));
   }
+
   $all = array_values(array_unique(array_filter(array_merge($base, $extra), 'strlen')));
   return $all;
 }
 
+/**
+ * Produce folded tokens for an indexed item.
+ */
 function item_tokens(array $it): array {
   $blob = implode(' ', array_filter([
     (string)($it['title'] ?? ''),
     (string)($it['page'] ?? ''),
     (string)($it['path'] ?? ''),
-    is_array($it['keywords'] ?? null) ? implode(' ', $it['keywords']) : '',
+    is_array(($it['keywords'] ?? null)) ? implode(' ', $it['keywords']) : '',
   ]));
   return u_tokens($blob);
 }
 
-// ---------- PHP SOURCE PARSING ----------
+// ---------- PHP SOURCE PARSING (from /usr/local/www) ----------
+
+/**
+ * Resolve a human-readable title from PHP source (##|*NAME, $pgtitle, etc.)
+ */
 function derive_page_title_from_php(string $php_src, string $filename_base): string {
   if (preg_match('~^\s*##\|\*NAME\s*=\s*(.+)$~mi', $php_src, $m)) {
     $t = norm_text($m[1]); if ($t !== '') return $t;
@@ -348,6 +426,9 @@ function derive_page_title_from_php(string $php_src, string $filename_base): str
   return prettify_filename($filename_base);
 }
 
+/**
+ * Extract likely UI strings from PHP (labels, headings, help, etc.)
+ */
 function extract_texts_from_php(string $php_src, int $cap = 300, int $maxlen = 220): array {
   $out = [];
   $add = function (string $t) use (&$out, $cap, $maxlen) {
@@ -378,7 +459,9 @@ function extract_texts_from_php(string $php_src, int $cap = 300, int $maxlen = 2
   return $uniq;
 }
 
-/** Collect *.php under /usr/local/www (follows symlinks) */
+/**
+ * Recursively collect *.php under /usr/local/www (follows symlinks).
+ */
 function collect_php_files_recursive(string $root, int $max_files, int $max_depth, array $exclude_dirs): array {
   $root = rtrim($root, '/');
   $out  = [];
@@ -402,7 +485,7 @@ function collect_php_files_recursive(string $root, int $max_files, int $max_dept
       if ($file->isDir()) continue;
       $path = $file->getPathname();
       if (substr($path, -4) !== '.php') continue;
-      if (should_skip_path($path)) continue; // <--- excludes the backend too
+      if (should_skip_path($path)) continue;
       $out[] = $path;
       if (count($out) >= $max_files) break;
     }
@@ -414,6 +497,9 @@ function collect_php_files_recursive(string $root, int $max_files, int $max_dept
 
 // ---------- EXTRA SOURCES (Packages & Menu) ----------
 
+/**
+ * Index package XML files (/usr/local/pkg/*.xml) into /pkg.php?xml=<name>.xml.
+ */
 function index_pkg_xml(int $cap = 200): array {
   $dir = '/usr/local/pkg';
   $out = [];
@@ -422,32 +508,37 @@ function index_pkg_xml(int $cap = 200): array {
     $sx = @simplexml_load_file($xml);
     if (!$sx) continue;
 
-    $base  = basename($xml, '.xml');
+    $base  = basename($xml, '.xml'); // e.g., "filer"
     $title = trim((string)($sx->menu->name ?? $sx->title ?? $sx->name ?? $base));
     if ($title === '') $title = $base;
 
     $descr = trim((string)($sx->descr ?? $sx->description ?? ''));
     $path  = "/pkg.php?xml={$base}.xml";
 
+    // Base keywords plus package description (if any)
     $keywords = [$base];
     if ($descr !== '') $keywords[] = $descr;
 
+    // Add localized tokens of the package title to help non-English queries
     $locTitle = tr_title_smart($title, $path);
     $keywords = array_values(array_filter(array_unique(array_merge($keywords, u_tokens($locTitle)))));
 
-    $rec = [
+    // Skip if path is suppressed (backend self, widgets, etc.)
+    if (should_skip_path($path)) continue;
+
+    $out[] = [
       'title'    => $title,
       'page'     => $title,
       'path'     => $path,
       'keywords' => $keywords,
     ];
-    if (!should_skip_path($rec['path'])) { // defensive
-      $out[] = $rec;
-    }
   }
   return $out;
 }
 
+/**
+ * Index menu JSON files (/usr/local/share/pfSense/menu.d/*.json).
+ */
 function index_menu_json(int $cap = 400): array {
   $dir = '/usr/local/share/pfSense/menu.d';
   $out = [];
@@ -459,19 +550,19 @@ function index_menu_json(int $cap = 400): array {
     $txt = (string)($node['text'] ?? $node['name'] ?? $node['title'] ?? '');
 
     if ($url !== '') {
+      // Build keywords: id/url/section + localized tokens of the text
       $locTxt  = tr_title_smart($txt, $url);
       $kwLocal = u_tokens($locTxt);
       $kws     = array_filter([(string)($node['id'] ?? ''), $url, (string)($node['section'] ?? '')]);
       $kws     = array_values(array_filter(array_unique(array_merge($kws, $kwLocal))));
 
-      $rec = [
-        'title'    => $txt ?: $url,
-        'page'     => $txt ?: prettify_filename(basename(parse_url($url, PHP_URL_PATH) ?: '')),
-        'path'     => $url,
-        'keywords' => $kws,
-      ];
-      if (!should_skip_path($rec['path'])) { // defensive
-        $out[] = $rec;
+      if (!should_skip_path($url)) { // skip suppressed paths
+        $out[] = [
+          'title'    => $txt ?: $url,
+          'page'     => $txt ?: prettify_filename(basename(parse_url($url, PHP_URL_PATH) ?: '')),
+          'path'     => $url,
+          'keywords' => $kws,
+        ];
       }
     }
 
@@ -494,7 +585,8 @@ function index_menu_json(int $cap = 400): array {
   return $out;
 }
 
-// ---------- INDEX BUILD ----------
+// ---------- INDEX BUILD (www + packages + menu) ----------
+
 function build_source_index(
   int $max_files, int $per_file_cap, int $max_index, int $max_str_len,
   int $max_depth, array $exclude_dirs,
@@ -504,22 +596,25 @@ function build_source_index(
 
   $out = [];
   foreach ($files as $fp) {
-    if (should_skip_path($fp)) continue;           // excludes backend if encountered
+    if (should_skip_path($fp)) continue;
     $size = @filesize($fp); if ($size === false || $size <= 0) continue;
     if ($size > 1500000) continue;
     $src = @file_get_contents($fp); if (!is_string($src) || $src === '') continue;
 
+    // Web path relative to /usr/local/www (e.g., /pfblockerng/pfblockerng_general.php)
     $prefix = '/usr/local/www';
     $rel = (strncmp($fp, $prefix.'/', strlen($prefix)+1) === 0) ? substr($fp, strlen($prefix)) : '/' . basename($fp);
     $path = $rel;
 
-    if (should_skip_path($path)) continue;         // uniform check for web-path too
+    // Skip suppressed paths (backend self, etc.)
+    if (should_skip_path($path)) continue;
 
     $base = basename($fp);
     $pageTitle = derive_page_title_from_php($src, $base);
     $texts = extract_texts_from_php($src, $per_file_cap, $max_str_len);
     if (!$texts) $texts = [prettify_filename($base)];
 
+    // Add localized (translated) tokens from the resolved page title
     $locPage   = tr_title_smart($pageTitle, $path);
     $locTokens = u_tokens($locPage);
 
@@ -529,13 +624,13 @@ function build_source_index(
         'title'    => $t,
         'path'     => $path,
         'page'     => $pageTitle,
-        'keywords' => $locTokens,
+        'keywords' => $locTokens, // help matching non-English queries
       ];
       if (count($out) >= $max_index) break 2;
     }
   }
 
-  // Packages
+  // Add package XML items
   if (count($out) < $max_index) {
     $pkg = index_pkg_xml($max_pkg_xml_items);
     foreach ($pkg as $it) {
@@ -545,7 +640,7 @@ function build_source_index(
     }
   }
 
-  // Menu
+  // Add menu JSON items
   if (count($out) < $max_index) {
     $menu = index_menu_json($max_menu_json_items);
     foreach ($menu as $it) {
@@ -559,19 +654,34 @@ function build_source_index(
 }
 
 // ---------- SEARCH & RANK ----------
-/*
- * If $whole_words === true:
- *   - Query is expanded to synonyms/translit, but **match is exact token vs token**.
- *   - No substring fallback, no RU-stem fallback.
- * If false:
- *   - Original fuzzy behavior (token hits + substring fallbacks).
+
+/**
+ * Whole-word boundary helper (for folded text).
+ * Matches when the term is NOT surrounded by letters (Unicode aware).
+ */
+function has_word_boundary_hit(string $folded_haystack, string $folded_term): bool {
+  if ($folded_term === '') return false;
+  $pat = '/(?<!\p{L})' . preg_quote($folded_term, '/') . '(?!\p{L})/u';
+  return (bool)preg_match($pat, $folded_haystack);
+}
+
+/**
+ * Rank items using multilingual tokens:
+ *  - Expand query via synonyms and transliteration.
+ *  - Tokenize items (title/page/path/keywords).
+ *  - Score by number of token hits, plus small bonus if path contains a term.
+ *  - Fallbacks include substring match in localized title and light RU stemming,
+ *    BUT ONLY when $whole_words === false (strict mode disables fuzzy fallbacks). <-- (CHANGE)
+ *  - Localize output names token-by-token (breadcrumb aware).
+ *  - Excludes suppressed paths (backend self, widgets, edits, etc.).
  */
 function search_ranked(array $docs, string $q, int $limit, array $syn_map, bool $whole_words): array {
   $q = trim($q);
   if ($q === '') return [];
 
-  $qterms = expand_query_terms($q, $syn_map);
+  $qterms = expand_query_terms($q, $syn_map, $whole_words);
   if (!$qterms) return [];
+
   $qset = array_flip($qterms);
 
   $cands = [];
@@ -582,32 +692,36 @@ function search_ranked(array $docs, string $q, int $limit, array $syn_map, bool 
     $iterms = item_tokens($it);
     if (!$iterms) continue;
 
+    // Primary score: exact token hit count
     $hit = 0;
+    foreach ($iterms as $t) if (isset($qset[$t])) $hit++;
 
-    if ($whole_words) {
-      // exact token match only
-      foreach ($iterms as $t) if (isset($qset[$t])) $hit++;
-    } else {
-      // fuzzy token hit
-      foreach ($iterms as $t) if (isset($qset[$t])) $hit++;
+    // For whole-words strict mode, DO NOT use substring fuzzy fallbacks.
+    if ($hit <= 0 && !$whole_words) {
+      $foldq   = u_fold($q);
+      $foldtxt = u_fold(($it['title'] ?? '') . ' ' . ($it['page'] ?? '') . ' ' . $path);
+      $foldloc = u_fold(tr_title_smart((string)($it['page'] ?? ''), $path));
+      $ruStem  = ru_stem_light($foldq);
 
-      if ($hit <= 0) {
-        // substring fallbacks (folded text + RU light stemming)
-        $foldq   = u_fold($q);
-        $foldtxt = u_fold(($it['title'] ?? '') . ' ' . ($it['page'] ?? '') . ' ' . $path);
-        $foldloc = u_fold(tr_title_smart((string)($it['page'] ?? ''), $path));
-        $ruStem  = ru_stem_light($foldq);
+      if ($foldq !== '' && (strpos($foldtxt, $foldq) !== false || strpos($foldloc, $foldq) !== false)) {
+        $hit = 1;
+      } elseif ($ruStem !== $foldq && $ruStem !== '' &&
+                (strpos($foldtxt, $ruStem) !== false || strpos($foldloc, $ruStem) !== false)) {
+        $hit = 1;
+      }
+    }
 
-        if ($foldq !== '' && (strpos($foldtxt, $foldq) !== false || strpos($foldloc, $foldq) !== false)) {
-          $hit = 1;
-        } elseif ($ruStem !== $foldq && $ruStem !== '' &&
-                  (strpos($foldtxt, $ruStem) !== false || strpos($foldloc, $ruStem) !== false)) {
-          $hit = 1;
-        }
+    // Extra: when whole_words is ON, allow boundary hits inside PATH only
+    // (e.g., /switch_ports.php should NOT match "port" as a whole word).
+    if ($whole_words && $hit <= 0) {
+      $fpath = u_fold($path);
+      foreach ($qterms as $qt) {
+        if ($qt !== '' && has_word_boundary_hit($fpath, $qt)) { $hit = 1; break; }
       }
     }
 
     if ($hit > 0) {
+      // Small bonus if any query term appears in the path (substring ok).
       $pbonus = 0.0;
       $fpath = u_fold($path);
       foreach ($qterms as $qt) {
@@ -620,6 +734,7 @@ function search_ranked(array $docs, string $q, int $limit, array $syn_map, bool 
 
   if (!$cands) return [];
 
+  // Order by score desc, then title asc
   usort($cands, function ($a, $b) {
     if ($a['_score'] === $b['_score']) return strcmp((string)$a['title'], (string)$b['title']);
     return ($a['_score'] < $b['_score']) ? 1 : -1;
@@ -633,7 +748,7 @@ function search_ranked(array $docs, string $q, int $limit, array $syn_map, bool 
     $seenPath[$path] = 1;
 
     $name = (string)($it['page'] ?? prettify_filename(basename($path)));
-    $name = tr_title_smart($name, $path);
+    $name = tr_title_smart($name, $path); // token-aware translation
 
     $out[] = [
       'id'      => count($out) + 1,
@@ -651,7 +766,26 @@ function search_ranked(array $docs, string $q, int $limit, array $syn_map, bool 
 }
 
 // ---------- MAIN FLOW ----------
+
 if ($q === '') {
+  // Include debug block when requested even if no query
+  if (!empty($_GET['debug'])) {
+    $docs = $cache->get($index_key) ?: [];
+    $ts   = (int)($cache->get($index_ts_key) ?? 0);
+    $now  = time();
+    echo json_encode([
+      'items' => [],
+      'debug' => [
+        'records_indexed' => is_array($docs) ? count($docs) : 0,
+        'index_age_sec'   => $now - ($ts ?: $now),
+        'synonyms_loaded' => 0,
+        'whole_words'     => $whole_words,
+        'raw_ww'          => $raw_ww,
+      ],
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+  }
+
   echo json_encode(['items' => []]);
   exit;
 }
@@ -669,7 +803,7 @@ if (!is_array($docs) || !count($docs)) {
   $cache->set($index_key, $docs);
   $cache->set($index_ts_key, $now);
 } elseif (($now - $ts) > $index_ttl) {
-  // TTL expired вЂ” rebuild under a short lock to avoid stampede
+  // TTL expired — rebuild under a short lock to avoid stampede
   $lu = (int)($cache->get($lock_key) ?? 0);
   if ($lu < $now) {
     $cache->set($lock_key, $now + $lock_ttl);
@@ -686,7 +820,7 @@ if (!is_array($docs) || !count($docs)) {
   }
 }
 
-// Load synonyms
+// Load synonyms (from SHM if fresh; else from disk)
 $syn_map = $cache->get($syn_key) ?: [];
 $syn_ts  = (int)($cache->get($syn_ts_key) ?? 0);
 if (!is_array($syn_map) || ($now - $syn_ts) > $syn_ttl) {
@@ -700,6 +834,7 @@ $items = search_ranked($docs, $q, $limit, $syn_map, $whole_words);
 
 // ---------- DEBUG OUTPUTS ----------
 if (!empty($_GET['debug'])) {
+  // Quick scan sampler if requested
   if ($_GET['debug'] === 'scan') {
     $needle = strtolower((string)($_GET['q'] ?? 'pfblocker'));
     $sample = [];
@@ -713,6 +848,8 @@ if (!empty($_GET['debug'])) {
     echo json_encode([
       'records_indexed' => is_array($docs) ? count($docs) : 0,
       'sample_matching' => $sample,
+      'whole_words'     => $whole_words,
+      'raw_ww'          => $raw_ww,
     ], JSON_UNESCAPED_UNICODE);
     exit;
   }
@@ -724,7 +861,7 @@ if (!empty($_GET['debug'])) {
       'index_age_sec'   => $now - ($ts ?: $now),
       'synonyms_loaded' => count($syn_map),
       'whole_words'     => $whole_words,
-      'raw_ww'          => isset($_GET['ww']) ? (string)$_GET['ww'] : null,
+      'raw_ww'          => $raw_ww,
     ],
   ], JSON_UNESCAPED_UNICODE);
   exit;
