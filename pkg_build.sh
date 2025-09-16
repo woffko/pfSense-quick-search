@@ -7,7 +7,7 @@
 set -eu
 
 PKGNAME="pfsense-quicksearch"
-PKGVER="0.4.7"
+PKGVER="0.4.8"
 
 ROOT="/root/qs-pkg"
 STAGE="$ROOT/stage"
@@ -115,4 +115,5 @@ pkg create -r ./stage -m ./meta -p ./pkg-plist -o .
 echo "[+] Done: $(ls -1t ${PKGNAME}-${PKGVER}.pkg | head -n1)"
 echo "Install:  pkg add $ROOT/${PKGNAME}-${PKGVER}.pkg"
 echo "Remove:   pkg delete -y ${PKGNAME}"
+
 
