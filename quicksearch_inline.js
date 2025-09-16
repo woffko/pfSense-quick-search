@@ -8,18 +8,11 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * http://www.apache.org/licenses/LICENSE-2.0
  *
- * Overlay Quick Search opened from a compact blue magnifier icon.
- * - Desktop icon after the last textual menu item; desktop vertical centering to .navbar-header
- * - Mobile icon inside .navbar-header, placed LEFT to the hamburger button
- * - Mobile overlay: full-width (100vw), pinned under the navbar
- * - On mobile, “Whole words only” sits UNDER the search input (grid layout)
- * - Keyboard nav (↑/↓, ←/→, Home/End, Enter, Esc) without the "skip every other item" bug
- * - Keeps focus in the input by default; ↑ from first item returns to input; Esc toggles input/close
- * - "Whole words only" toggle (server-side via ?ww=1 or ?ww=0)
- * - Smart grouping with prefix merge (e.g., many "Status / …" -> one big "Status")
- * - Auto-fit navbar container width on desktop (no wrap, capped to viewport); native width on mobile
- * - In-panel magnifier spins while searching; click it to rebuild index
- * - Last query persisted in localStorage (restored on open)
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 (function () {
@@ -780,3 +773,4 @@
     mount();
   }
 })();
+
