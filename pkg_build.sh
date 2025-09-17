@@ -35,6 +35,22 @@ cat > "$ROOT/pkg-plist" << 'EOF'
 /usr/local/www/js/quicksearch_inline.js
 EOF
 
+# ---- Detect current pfSense ABI and craft a tolerant arch pattern ----
+# Example ABI: "FreeBSD:14:amd64:pfSense"
+ABI="$(pkg config ABI 2>/dev/null || true)"
+if [ -n "${ABI}" ]; then
+  ABI_OS="${ABI%%:*}"          # "FreeBSD"
+  ABI_TAIL="${ABI##*:}"        # "pfSense" (flavor)
+  # Match any version & any arch, but keep pfSense flavor requirement:
+  # Result: "FreeBSD:*:*:pfSense"
+  ARCH_PATTERN="${ABI_OS}:*:*:${ABI_TAIL}"
+else
+  # Fallback: very permissive; pkg will still check dependencies.
+  ARCH_PATTERN="FreeBSD:*"
+fi
+
+echo "[*] Using arch pattern: ${ARCH_PATTERN}"
+
 # manifest
 cat > "$META/+MANIFEST" << EOF
 name: ${PKGNAME}
@@ -43,7 +59,7 @@ origin: local/${PKGNAME}
 comment: QuickSearch   full-text GUI search for pfSense (RAM-only index)
 www: https://github.com/woffko/pfSense-quick-search
 maintainer: w0wkin@gmail.com
-arch: freebsd:*
+arch: ${ARCH_PATTERN}
 prefix: /
 desc: |
   Installs diag_quicksearch.php and quicksearch_inline.js, and injects a script tag into head.inc.
@@ -115,5 +131,3 @@ pkg create -r ./stage -m ./meta -p ./pkg-plist -o .
 echo "[+] Done: $(ls -1t ${PKGNAME}-${PKGVER}.pkg | head -n1)"
 echo "Install:  pkg add $ROOT/${PKGNAME}-${PKGVER}.pkg"
 echo "Remove:   pkg delete -y ${PKGNAME}"
-
-
