@@ -12,22 +12,26 @@
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
- * limitations under the License.
+ * limitations under the License.*
  */
 
 (function () {
   // -------------------- Tunables --------------------
-  const BUILD         = 'InlineQuickSearch v2025-09-15-mobile-header-button+ww-under-input';
+  const BUILD         = 'InlineQuickSearch v2025-09-15-mobile-overlay-top';
   const PH_BASE_LABEL = 'Find';
   const MIN_CHARS     = 3;
   const IDLE_MS       = 100;
 
-  // Desktop micro tuning; mobile ignores transform.
+  // Desktop micro tuning for vertical alignment (mobile ignores this).
   const NUDGE_TOP     = 0;
 
+  // Persist last entered query across openings (until localStorage is cleared).
   const LS_KEY_LAST_QUERY = 'pf_qs_last_query';
+
+  // Host UL where the desktop navbar button is mounted.
   let qsHostEl = null;
 
+  // Debounce helper
   const debounce = (fn, ms)=>{ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; };
 
   // -------------------- CSS --------------------
@@ -54,29 +58,36 @@
       #qs-nav-icon:focus-visible{ box-shadow:0 0 0 3px rgba(11,110,253,.35); }
       #qs-nav-icon svg{ width:60%; height:60%; pointer-events:none; }
 
-      /* MOBILE header icon: sits LEFT to the hamburger */
+      /* MOBILE/COLLAPSED header icon: centered horizontally inside .navbar-header */
       #qs-nav-mobile{
         display:none; /* hidden by default (desktop) */
-        position:relative; z-index:3;
+        position:absolute; z-index:3;
         width:34px; height:34px; border-radius:8px;
         background:#0b6efd; color:#fff; border:0;
-        margin: 8px 8px 8px 0; /* small gap from the burger */
+        left:50%; top:50%;
+        transform: translate(-50%, -50%);
         align-items:center; justify-content:center;
         line-height:1; padding:0; cursor:pointer;
       }
       #qs-nav-mobile svg{ width:60%; height:60%; pointer-events:none; }
       #qs-nav-mobile:focus-visible{ box-shadow:0 0 0 3px rgba(11,110,253,.35); }
 
+      /* Treat "mobile" by width for layout. Collapsed/expanded behavior is finalized in JS. */
       @media (max-width: 767px){
-        /* Desktop icon hidden on mobile; mobile header icon visible */
+        /* Keep desktop icon out of the way on small screens */
         #qs-nav-li{ display:none; }
-        #qs-nav-mobile{ display:inline-flex; }
-
-        /* No transform offsets on mobile */
         #qs-nav-icon{ transform:none !important; }
+
+        /* Allow absolute centering of the mobile button */
+        #pf-navbar .navbar-header, .navbar-header{ position:relative; }
+        #qs-nav-mobile{ display:inline-flex; }
       }
 
-      #qs-overlay{ position:fixed; left:0; right:0; top:52px; display:none; z-index:100001; }
+      /* Overlay — IMPORTANT: top:0 by default! On desktop JS repositions under navbar. */
+      #qs-overlay{
+        position:fixed; left:0; right:0; top:0;
+        display:none; z-index:100001;
+      }
       #qs-overlay.open{ display:block; }
 
       #qs-panel{
@@ -186,7 +197,7 @@
     return t || (it.path||'');
   }
 
-  // Detect Bootstrap collapsed (mobile) navbar
+  // Detect Bootstrap collapsed (mobile/tablet "burger" state)
   function isMobileCollapsed(){
     const nav = document.getElementById('topmenu') || document.querySelector('.navbar-fixed-top');
     const toggle = nav?.querySelector('.navbar-toggle');
@@ -215,7 +226,7 @@
         </svg>`;
       li.appendChild(btn);
 
-      // Place after the last textual li (usually Help)
+      // Place after the last LI that has a visible text label (usually Help).
       let mounted = false;
       if (left) {
         const lis = Array.from(left.children).filter(el => el.tagName === 'LI');
@@ -233,7 +244,7 @@
       if (!mounted && right){ right.appendChild(li); qsHostEl = right; mounted = true; }
     }
 
-    // Create mobile header icon (once)
+    // Create mobile header icon (centered) once
     if (!document.getElementById('qs-nav-mobile')){
       const header = document.querySelector('#pf-navbar .navbar-header') ||
                      document.querySelector('.navbar-header');
@@ -246,18 +257,11 @@
         mobileBtn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
         </svg>`;
-
-        // Insert BEFORE the hamburger button -> visually "left of it"
-        const burger = header.querySelector('.navbar-toggle');
-        if (burger){
-          burger.insertAdjacentElement('beforebegin', mobileBtn);
-        } else {
-          header.appendChild(mobileBtn);
-        }
+        header.appendChild(mobileBtn); // Centered via CSS (absolute inside header)
       }
     }
 
-    // Bind click handlers (both icons open/close the overlay)
+    // Bind both icons
     document.getElementById('qs-nav-icon')?.addEventListener('click', toggleOverlay);
     document.getElementById('qs-nav-mobile')?.addEventListener('click', toggleOverlay);
 
@@ -275,14 +279,14 @@
                      document.querySelector('.navbar-collapse');
     const moTargets = [header, collapse, collapse?.querySelector('.navbar-right')].filter(Boolean);
     for (const target of moTargets){
-      const mo = new MutationObserver(debounce(()=>{ queueAlign(); queueFitNavbarWidth(); }, 50));
+      const mo = new MutationObserver(debounce(()=>{ queueAlign(); queueFitNavbarWidth(); setOverlayTop(); }, 50));
       mo.observe(target, { attributes:true, childList:true, subtree:true, characterData:true });
     }
 
     if (document.fonts && document.fonts.ready) {
-      document.fonts.ready.then(()=>{ queueAlign(); queueFitNavbarWidth(); });
+      document.fonts.ready.then(()=>{ queueAlign(); queueFitNavbarWidth(); setOverlayTop(); });
     }
-    window.addEventListener('load', ()=>{ queueAlign(); queueFitNavbarWidth(); }, { once:true });
+    window.addEventListener('load', ()=>{ queueAlign(); queueFitNavbarWidth(); setOverlayTop(); }, { once:true });
   }
 
   // ---------- Desktop vertical centering (disabled on mobile) ----------
@@ -291,6 +295,7 @@
   function alignIconToHeaderCenter(){
     const btn = document.getElementById('qs-nav-icon'); if (!btn) return;
 
+    // On collapsed/mobile, keep the desktop icon unshifted.
     if (isMobileCollapsed()){
       btn.style.setProperty('--qs-y', '0px');
       return;
@@ -353,10 +358,20 @@
     }
   }
 
+  // Position the overlay: on mobile/collapsed -> 0; on desktop -> under navbar.
   function setOverlayTop(){
     const overlay = document.getElementById('qs-overlay');
+    if (!overlay) return;
+
+    if (isMobileCollapsed()){
+      // MOBILE/TABLET (burger visible): always from the very top of the viewport
+      overlay.style.top = '0px';
+      return;
+    }
+
+    // DESKTOP: keep it right under the navbar height
     const nav = document.getElementById('topmenu') || document.querySelector('.navbar-fixed-top');
-    if (!overlay || !nav) return;
+    if (!nav) return;
     const h = Math.round(nav.getBoundingClientRect().height || 52);
     overlay.style.top = h + 'px';
   }
@@ -494,7 +509,7 @@
     if (ul) ul.innerHTML='';
     setEmptyMessage('');
     focusables = [];
-    keyboardIndex = -1;
+    keyboardIndex = -1; // keep focus in input initially
   }
   function setEmptyMessage(txt){
     const el = document.getElementById('qs-empty');
@@ -576,7 +591,7 @@
       list.appendChild(li);
     }
 
-    keyboardIndex = -1;
+    keyboardIndex = -1; // keep focus in the input by default
     updateFocusables(false);
   }
 
@@ -671,6 +686,7 @@
         break;
 
       default:
+        // Typing while a list item is focused moves caret to the input
         if (keyboardIndex >= 0 &&
             e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
           const pos = inputEl.selectionStart;
@@ -773,4 +789,3 @@
     mount();
   }
 })();
-
