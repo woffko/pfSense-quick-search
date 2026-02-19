@@ -7,7 +7,7 @@
 set -eu
 
 PKGNAME="pfsense-quicksearch"
-PKGVER="0.4.8"
+PKGVER="0.4.8_1"
 
 ROOT="/root/qs-pkg"
 STAGE="$ROOT/stage"
