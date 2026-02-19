@@ -113,7 +113,9 @@
         border:1px solid rgba(0,0,0,.15); background:transparent; color:inherit;
       }
       #qs-input::placeholder{ opacity:.7; }
-      #qs-whole{ display:flex; align-items:center; gap:6px; white-space:nowrap; font-size:12px; opacity:.9; }
+      #qs-whole{ display:flex; align-items:center; justify-content:center; font-size:12px; opacity:.9; user-select:none; }
+      .qs-checkbox-wrap{ display:flex; align-items:center; gap:6px; white-space:nowrap; }
+      .qs-checkbox-wrap span{ margin-top: 5px; }
 
       /* On MOBILE, place the checkbox UNDER the input using CSS grid */
       @media (max-width: 767px){
@@ -219,8 +221,8 @@
 
       const btn = document.createElement('button');
       btn.id = 'qs-nav-icon';
-      btn.title = 'Quick Search';
-      btn.setAttribute('aria-label', 'Quick Search');
+      btn.title = 'Quick Search (Ctrl + K)';
+      btn.setAttribute('aria-label', 'Quick Search (Ctrl + K)');
       btn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
         </svg>`;
@@ -252,8 +254,8 @@
         const mobileBtn = document.createElement('button');
         mobileBtn.id = 'qs-nav-mobile';
         mobileBtn.type = 'button';
-        mobileBtn.title = 'Quick Search';
-        mobileBtn.setAttribute('aria-label','Quick Search');
+        mobileBtn.title = 'Quick Search (Ctrl + K)';
+        mobileBtn.setAttribute('aria-label','Quick Search (Ctrl + K)');
         mobileBtn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
         </svg>`;
@@ -386,8 +388,10 @@
         <div id="qs-top">
           <input id="qs-input" type="search" placeholder="${PH_BASE_LABEL}..." autocomplete="off">
           <label id="qs-whole">
-            <input type="checkbox" id="qs-whole-cb">
-            <span>${escapeHtml('Whole words only')}</span>
+            <div class="qs-checkbox-wrap">
+              <input type="checkbox" id="qs-whole-cb">
+              <span>${escapeHtml('Whole words only')}</span>
+            </div>
           </label>
           <button id="qs-action" title="${escapeHtml('Rebuild index')}" aria-label="${escapeHtml('Rebuild index')}">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -610,6 +614,12 @@
   }
 
   function handleKey(e){
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      toggleOverlay();
+      return;
+    }
+
     const o = document.getElementById('qs-overlay');
     if (!o || !o.classList.contains('open')) return;
 
