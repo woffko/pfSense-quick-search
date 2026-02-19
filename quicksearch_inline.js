@@ -113,7 +113,8 @@
         border:1px solid rgba(0,0,0,.15); background:transparent; color:inherit;
       }
       #qs-input::placeholder{ opacity:.7; }
-      #qs-whole{ display:flex; align-items:center; gap:6px; white-space:nowrap; font-size:12px; opacity:.9; }
+      #qs-whole{ display:flex; align-items:center; justify-content:center; gap:6px; white-space:nowrap; font-size:12px; opacity:.9; user-select:none; }
+      #qs-whole input{ margin:0; }
 
       /* On MOBILE, place the checkbox UNDER the input using CSS grid */
       @media (max-width: 767px){
@@ -542,57 +543,6 @@
       el.focus({preventScroll:true});
       el.scrollIntoView({ block:'nearest' });
     }
-  }
-
-  function render(items){
-    const list = document.getElementById('qs-list');
-    if (!list) return;
-
-    clearList();
-
-    if (!items || !items.length){
-      setEmptyMessage(L('no_results','No results...'));
-      return;
-    }
-
-    const {groups, singles} = groupItems(items);
-
-    for (const g of groups){
-      const li = makeRow({ title: g.title, classes:['qs-group'], role:'button' });
-      li.setAttribute('aria-expanded', 'false');
-      li.querySelector('.qs-title').innerHTML = `<span class="qs-caret" aria-hidden="true"></span>${escapeHtml(g.title)}`;
-      const badge = document.createElement('div'); badge.className='qs-badge'; badge.textContent = String(g.items.length);
-      li.appendChild(badge);
-      list.appendChild(li);
-
-      const frag = document.createDocumentFragment();
-      for (const ch of g.items){
-        const row = makeRow({ title: ch.title, path: ch.path, classes:['qs-child','hidden'] });
-        row.addEventListener('click', ()=> { if (ch.path) window.location.assign(ch.path); });
-        frag.appendChild(row);
-      }
-      list.appendChild(frag);
-
-      li.addEventListener('click', ()=>{
-        const open = li.getAttribute('aria-expanded') === 'true';
-        li.setAttribute('aria-expanded', open ? 'false' : 'true');
-        let n = li.nextElementSibling;
-        while (n && !n.classList.contains('qs-group') && !n.classList.contains('qs-single')){
-          n.classList.toggle('hidden', open);
-          n = n.nextElementSibling;
-        }
-        updateFocusables(false);
-      });
-    }
-
-    for (const s of singles){
-      const li = makeRow({ title:s.title, path:s.path, classes:['qs-single'] });
-      li.addEventListener('click', ()=> { if (s.path) window.location.assign(s.path); });
-      list.appendChild(li);
-    }
-
-    keyboardIndex = -1; // keep focus in the input by default
-    updateFocusables(false);
   }
 
   function focusStep(delta){
