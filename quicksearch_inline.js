@@ -219,8 +219,8 @@
 
       const btn = document.createElement('button');
       btn.id = 'qs-nav-icon';
-      btn.title = 'Quick Search';
-      btn.setAttribute('aria-label', 'Quick Search');
+      btn.title = 'Quick Search (Ctrl + K)';
+      btn.setAttribute('aria-label', 'Quick Search (Ctrl + K)');
       btn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
         </svg>`;
@@ -252,8 +252,8 @@
         const mobileBtn = document.createElement('button');
         mobileBtn.id = 'qs-nav-mobile';
         mobileBtn.type = 'button';
-        mobileBtn.title = 'Quick Search';
-        mobileBtn.setAttribute('aria-label','Quick Search');
+        mobileBtn.title = 'Quick Search (Ctrl + K)';
+        mobileBtn.setAttribute('aria-label','Quick Search (Ctrl + K)');
         mobileBtn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path fill="currentColor" d="M15.5 14h-.79l-.28-.28A6.2 6.2 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.22-1.57l.28.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
         </svg>`;
@@ -610,6 +610,12 @@
   }
 
   function handleKey(e){
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      toggleOverlay();
+      return;
+    }
+
     const o = document.getElementById('qs-overlay');
     if (!o || !o.classList.contains('open')) return;
 
